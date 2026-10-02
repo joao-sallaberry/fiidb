@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<DadosEconomicoFinanceiros>
+  <DadosGerais>
+    <NomeFundo>FII ECOAGR</NomeFundo>
+    <CNPJFundo>41224330000148</CNPJFundo>
+    <NomeAdministrador>VORTX DTVM LTDA</NomeAdministrador>
+    <CNPJAdministrador>22610500000188</CNPJAdministrador>
+    <ResponsavelInformacao>Rafael Crepaldi</ResponsavelInformacao>
+    <TelefoneContato>(11) 3164-7177</TelefoneContato>
+    <DataInformacao>2026-10-02</DataInformacao>
+    <Ano>2026</Ano>
+  </DadosGerais>
+  <InformeRendimentos>
+    <Provento>
+      <CodISIN>BREGAFCTF006</CodISIN>
+      <CodNegociacao>EGAF11</CodNegociacao>
+      <Rendimento>
+        <AtoSocietarioAprovacao>02/10/2026</AtoSocietarioAprovacao>
+        <DataBase>2026-10-02</DataBase>
+        <ValorProvento>1.26</ValorProvento>
+        <DataPagamento>2026-10-09</DataPagamento>
+        <PeriodoReferencia>09-2026</PeriodoReferencia>
+        <RendimentoIsentoIR>Sim</RendimentoIsentoIR>
+      </Rendimento>
+    </Provento>
+  </InformeRendimentos>
+</DadosEconomicoFinanceiros>

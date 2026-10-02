@@ -1,0 +1,33 @@
+[project]
+name = "fiidb"
+version = "0.1.0"
+description = "Ingestion pipeline for Brazilian closed-end fund data (CVM, B3)"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "psycopg[binary]>=3.3.6",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+fiidb = "fiidb.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fiidb"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+line-length = 120

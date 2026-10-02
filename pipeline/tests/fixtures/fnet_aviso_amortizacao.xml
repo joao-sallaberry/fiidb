@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<DadosEconomicoFinanceiros>
+	<DadosGerais>
+		<NomeFundo>BRC II FUNDO DE INVESTIMENTO IMOBILIÁRIO RESP LIMITADA</NomeFundo>
+		<CNPJFundo>43862625000175</CNPJFundo>
+		<NomeAdministrador>BR-CAPITAL DISTRIB. TITS. VALS. MOBILIÁRIOS S.A.</NomeAdministrador>
+		<CNPJAdministrador>44077014000189</CNPJAdministrador>
+		<ResponsavelInformacao>Ramirez Lima de Morais</ResponsavelInformacao>
+		<TelefoneContato>(11) 5508-3500</TelefoneContato>
+		<DataInformacao>2026-10-02</DataInformacao>
+		<Ano>2026</Ano>
+	</DadosGerais>
+	<InformeRendimentos>
+		<Provento>
+			<CodISIN>BRRTELCTF027</CodISIN>
+			<CodNegociacao>RTEL16</CodNegociacao>
+			<Rendimento>
+				<AtoSocietarioAprovacao/>
+				<DataBase>2026-10-02</DataBase>
+				<ValorProvento>0.09</ValorProvento>
+				<DataPagamento>2026-10-13</DataPagamento>
+				<PeriodoReferencia>setembro/2026</PeriodoReferencia>
+				<RendimentoIsentoIR>Sim</RendimentoIsentoIR>
+			</Rendimento>
+			<Amortizacao tipo="Parcial">
+				<AtoSocietarioAprovacao/>
+				<DataBase>2026-10-02</DataBase>
+				<ValorProvento>0.33</ValorProvento>
+				<DataPagamento>2026-10-13</DataPagamento>
+				<PeriodoReferencia>outubro/2026</PeriodoReferencia>
+			</Amortizacao>
+		</Provento>
+	</InformeRendimentos>
+</DadosEconomicoFinanceiros>

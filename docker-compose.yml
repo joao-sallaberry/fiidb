@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fiidb
+      POSTGRES_USER: fiidb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fiidb}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fiidb -d fiidb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Applies db/migrations. Run with: docker compose run --rm migrate
+  migrate:
+    image: ghcr.io/amacneil/dbmate:2
+    profiles: ["tools"]
+    environment:
+      DATABASE_URL: postgres://fiidb:${POSTGRES_PASSWORD:-fiidb}@postgres:5432/fiidb?sslmode=disable
+      DBMATE_MIGRATIONS_DIR: /db/migrations
+      DBMATE_NO_DUMP_SCHEMA: "true"  # the container runs as root; the migrations are the source of truth
+    command: ["--wait", "up"]
+    volumes:
+      - ./db:/db
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
