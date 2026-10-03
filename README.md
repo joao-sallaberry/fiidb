@@ -6,7 +6,7 @@ Armazena e serve dados de fundos imobiliários (FII) listados na B3, usando apen
 |---|---|
 | Cadastro e informe mensal (PL, VP/cota, cotistas, DY) | [CVM Dados Abertos](https://dados.cvm.gov.br/dataset/fii-doc-inf_mensal) |
 | Cotações diárias | B3 COTAHIST |
-| Proventos | B3 FundosNET — "Aviso aos Cotistas – Estruturado" (em breve) |
+| Proventos (fundos da watchlist) | B3 FundosNET — "Aviso aos Cotistas – Estruturado" |
 
 ## Rodando localmente
 
@@ -24,6 +24,16 @@ uv run fiidb status
 
 `catch-up` é idempotente: pode rodar no boot e diariamente. Outros comandos: `fiidb cvm-fii <ano>`,
 `fiidb cotahist --year <ano> | --day <AAAA-MM-DD>`.
+
+Proventos são buscados só para os fundos que você acompanha (o FundosNET é lento demais para todos):
+
+```sh
+uv run fiidb watch add HGLG11 KNRI11     # inclui e carrega ~13 meses de proventos
+uv run fiidb fnet-latest                 # avisos novos (rodar com frequência; também roda no catch-up)
+uv run fiidb fnet-history HGLG11         # histórico completo, quando quiser
+```
+
+A view `fund_metrics` reúne, por ticker, preço, VP/cota, P/VP, último rendimento, DY 12m e liquidez.
 
 ## Estrutura
 

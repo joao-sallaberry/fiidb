@@ -39,8 +39,10 @@ pipeline/               projeto Python (uv), pacote `fiidb`
     dates.py            today()/now() no fuso de São Paulo, parse_date
     linking.py          vínculo ticker (security) → fundo (fund)
     seeds.py            carga de seeds/
-    sources/            um módulo por fonte: cvm_fii, b3_cotahist, fnet (só parser por enquanto)
-  tests/                test_parsers.py (sem banco), test_load.py (com banco), fixtures/ (amostras reais)
+    watchlist.py        fundos cujos proventos são buscados no FundosNET
+    sources/            um módulo por fonte: cvm_fii, b3_cotahist, fnet
+  tests/                conftest.py (banco de teste), test_parsers.py (sem banco), test_load.py e
+                        test_fnet_load.py (com banco; FundosNET simulado), fixtures/ (amostras reais)
 docker-compose.yml      postgres + migrate (dbmate, profile "tools")
 ```
 
@@ -58,6 +60,11 @@ uv run fiidb status                           # contagens + última execução p
 uv run fiidb cvm-fii 2025 --force             # recarrega um ano da CVM mesmo sem mudança
 uv run fiidb cotahist --year 2024             # ou --day 2026-10-01
 uv run fiidb seed                             # recarrega seeds/fund_overrides.csv
+
+uv run fiidb watch add HGLG11 KNRI11          # + 400 dias de proventos (--no-history, --cnpj p/ ticker sem fundo)
+uv run fiidb watch list | remove TICKER
+uv run fiidb fnet-latest                      # últimos avisos de cada fundo da watchlist (rodar com frequência)
+uv run fiidb fnet-history HGLG11 [--since AAAA-MM-DD] [--force]   # histórico completo, ad hoc
 
 uv run pytest                                 # parsers
 FIIDB_TEST_DATABASE_URL=postgresql://fiidb:fiidb@localhost:5432/fiidb_test uv run pytest   # + carga
@@ -95,11 +102,17 @@ indicado**; nunca aponte para `fiidb`.
 - **Fonte nova:** módulo em `sources/` com `parse_*` puro (testado com fixture real em `tests/fixtures/`, cortada
   para poucos KB) e `load`/`ingest_*` que usa `db.upsert` + `db.record_run`; ligue no `catch-up` do `cli.py`.
   Arquivos CVM/B3 são latin-1: ao recortar fixtures com grep use `LC_ALL=C grep -a`.
+- **FundosNET:** instável (requisições travam). Timeout curto + retries; nunca deixe a falha de um fundo ou
+  documento interromper os outros. Só fundos da `watchlist` são consultados. A watchlist fica no banco, não no
+  git (o repositório é público e ela pode revelar a carteira do autor).
 - **Escopo:** somente FII (BDI 12) por enquanto; Fiagro/FI-Infra depois (`fund.type` já existe). Sem fontes pagas,
   sem dados intraday.
 - **Idioma:** código, comentários e `comment on` em inglês; documentação (`docs/`, README, este arquivo) em
   português.
-- **Git:** branch `master`, sem remoto. Commits só quando pedido.
+- **Git:** branch `master`, remoto `origin` = github.com/joao-sallaberry/fiidb (**público**). Commits e pushes só
+  quando pedido. Nada sensível no repositório (`.env` é ignorado).
+- **Licença:** AGPL-3.0-or-later para o código; os dados seguem os termos das fontes (CVM: ODbL; B3: termos
+  próprios). Ver README.
 
 ## Ambiente local
 
@@ -114,11 +127,12 @@ indicado**; nunca aponte para `fiidb`.
 
 1. ✅ Fundação: docker compose, migrações, projeto Python
 2. ✅ CVM informe mensal + COTAHIST (histórico desde 2016 + diário); classificação `fund_profile`
-3. Proventos via FundosNET (~35 mil avisos de FII; também melhora o vínculo ticker → fundo) e métricas em SQL
-   (P/VP, DY 12m, liquidez média)
+3. ✅ Proventos via FundosNET para os fundos da watchlist; vínculo `fnet`; view `fund_metrics` (P/VP, DY 12m,
+   liquidez média)
 4. Publicação de snapshots JSON/CSV no R2 + Apps Script que grava valores na planilha
 5. Fiagro e FI-Infra
 6. API Hono/TS com tokens; deploy (Oracle Always Free ou VPS); frontend
 
-Pendências conhecidas: ~45 tickers negociados sem fundo vinculado (a fase 3 deve resolver); segmento vazio para
+Pendências conhecidas: ~48 tickers negociados sem fundo vinculado (usar `watch add --cnpj` para os de interesse);
+agendamento dos jobs (`catch-up` no boot/diário, `fnet-latest` frequente) ainda não configurado; segmento vazio para
 ~80 fundos de tijolo negociados que se declaram "Multicategoria" (preencher via `seeds/fund_overrides.csv`).

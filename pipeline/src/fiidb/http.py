@@ -10,11 +10,18 @@ log = logging.getLogger(__name__)
 USER_AGENT = "Mozilla/5.0 (compatible; fiidb/0.1)"
 
 
-def client() -> httpx.Client:
-    return httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=120, follow_redirects=True)
+def client(timeout: float = 120) -> httpx.Client:
+    return httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=timeout, follow_redirects=True)
 
 
-def fetch(http: httpx.Client, url: str, *, cache_dir: Path | None = None, retries: int = 3) -> bytes | None:
+def fetch(
+    http: httpx.Client,
+    url: str,
+    *,
+    params: dict | None = None,
+    cache_dir: Path | None = None,
+    retries: int = 3,
+) -> bytes | None:
     """GET a URL. Returns None on 404. When cache_dir is given, the body is cached on disk
     (only use it for files that never change, like closed-year archives)."""
     cached = cache_dir / url.rsplit("/", 1)[-1] if cache_dir else None
@@ -23,7 +30,7 @@ def fetch(http: httpx.Client, url: str, *, cache_dir: Path | None = None, retrie
 
     for attempt in range(1, retries + 1):
         try:
-            resp = http.get(url)
+            resp = http.get(url, params=params)
             if resp.status_code == 404:
                 return None
             resp.raise_for_status()

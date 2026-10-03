@@ -94,3 +94,26 @@ def test_cvm_fii_implausible_ratios_are_nulled_and_kept_raw():
     assert jan.values["return_effective_ratio"] is None
     assert jan.raw["Percentual_Rentabilidade_Efetiva_Mes"] == "10675991303"
     assert jan.values["dividend_yield_ratio"] == Decimal("0.004342")
+
+
+def test_fnet_format_cnpj():
+    assert fnet.format_cnpj("11728688000147") == "11.728.688/0001-47"
+    assert fnet.format_cnpj("332266000131") == "00.332.266/0001-31"
+
+
+def test_fnet_parse_search():
+    payload = b"""{"recordsTotal": 128, "data": [
+        {"id": 1073788, "versao": 2, "situacaoDocumento": "A", "dataEntrega": "30/12/2025 19:41"},
+        {"id": 1000001, "versao": 1, "situacaoDocumento": "C", "dataEntrega": "02/01/2025 08:05"}]}"""
+    total, docs = fnet.parse_search(payload)
+    assert total == 128
+    assert [(d.id, d.version, d.status) for d in docs] == [(1073788, 2, "A"), (1000001, 1, "C")]
+    assert docs[0].delivered_at.isoformat() == "2025-12-30T19:41:00-03:00"
+
+
+def test_fnet_legacy_layout_before_2022():
+    [d] = fnet.parse_xml((FIXTURES / "fnet_aviso_rendimento_2022.xml").read_bytes())
+    assert (d.isin, d.ticker, d.kind) == ("BRHGLGCTF004", "HGLG11", "income")
+    assert (d.base_date, d.payment_date) == (date(2022, 8, 31), date(2022, 9, 15))
+    assert d.amount_per_share == Decimal("1.1")
+    assert d.tax_exempt is True

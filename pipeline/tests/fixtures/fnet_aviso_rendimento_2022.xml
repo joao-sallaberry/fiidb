@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<DadosEconomicoFinanceiros xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<DadosGerais>
+		<NomeFundo>CSHG LOGISTICA - FUNDO DE INVESTIMENTO IMOBILIÁRIO - FII</NomeFundo>
+		<CNPJFundo>11728688000147</CNPJFundo>
+		<NomeAdministrador>CREDIT SUISSE HEDGING - GRIFFO CORRETORA DE VALORES S.A.</NomeAdministrador>
+		<CNPJAdministrador>61809182000130</CNPJAdministrador>
+		<ResponsavelInformacao>Augusto Afonso Martins</ResponsavelInformacao>
+		<TelefoneContato>(11) 3701-6800</TelefoneContato>
+		<CodISINCota>BRHGLGCTF004</CodISINCota>
+		<CodNegociacaoCota>HGLG11</CodNegociacaoCota>
+	</DadosGerais>
+	<InformeRendimentos>
+		<Rendimento>
+			<DataAprovacao>2022-08-31</DataAprovacao>
+			<DataBase>2022-08-31</DataBase>
+			<DataPagamento>2022-09-15</DataPagamento>
+			<ValorProventoCota>1.1</ValorProventoCota>
+			<PeriodoReferencia>Agosto</PeriodoReferencia>
+			<Ano>2022</Ano>
+			<RendimentoIsentoIR>true</RendimentoIsentoIR>
+		</Rendimento>
+		<Amortizacao tipo=""/>
+	</InformeRendimentos>
+</DadosEconomicoFinanceiros>
