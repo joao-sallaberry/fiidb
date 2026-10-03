@@ -33,7 +33,35 @@ uv run fiidb fnet-latest                 # avisos novos (rodar com frequência; 
 uv run fiidb fnet-history HGLG11         # histórico completo, quando quiser
 ```
 
-A view `fund_metrics` reúne, por ticker, preço, VP/cota, P/VP, último rendimento, DY 12m e liquidez.
+A view `fund_metrics` reúne, por ticker, preço, VP/cota, P/VP, último rendimento, DY 12m e liquidez. Proventos são
+ajustados por desdobramentos (listados pela B3), sempre na cota de hoje.
+
+## Google Sheets
+
+O pipeline reescreve uma aba só dele (`fiidb`) com os fundos da watchlist, a cada `catch-up`, `fnet-latest` ou
+`fiidb sheets`. Nas suas abas, busque os valores pelo ticker; o resto (células manuais, `GOOGLEFINANCE`) é seu.
+
+Configuração (uma vez):
+
+1. Em [console.cloud.google.com](https://console.cloud.google.com), crie um projeto e ative a **Google Sheets API**.
+2. Em **IAM e administrador → Contas de serviço**, crie uma conta (sem papéis). Em **Chaves → Adicionar chave →
+   Criar nova chave → JSON**, o navegador baixa um `.json`: mova-o para
+   `~/.config/fiidb/google-service-account.json` e rode `chmod 600` nele.
+3. Compartilhe a planilha com o e-mail da conta de serviço (`...@<projeto>.iam.gserviceaccount.com`) como Editor.
+4. No `.env`, `FIIDB_SHEET_ID=<id>` (o trecho da URL da planilha entre `/d/` e `/edit`).
+5. `uv run fiidb sheets`.
+
+Fórmulas (planilha em português; buscar a coluna pelo nome do cabeçalho mantém a fórmula válida se a ordem mudar):
+
+```
+Preço:      =GOOGLEFINANCE("BVMF:"&A2)
+VP/cota:    =PROCX($A2; fiidb!$A:$A; PROCX("vp_cota"; fiidb!$1:$1; fiidb!$A:$Z); "")
+Rend. 12m:  =PROCX($A2; fiidb!$A:$A; PROCX("rendimentos_12m"; fiidb!$1:$1; fiidb!$A:$Z); "")
+P/VP:       =B2/C2
+DY 12m:     =D2/B2
+```
+
+`rendimentos_12m` fica vazio enquanto o histórico do fundo não cobre 12 meses.
 
 ## Estrutura
 

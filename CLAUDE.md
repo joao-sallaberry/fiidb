@@ -3,7 +3,11 @@
 Dados de fundos imobiliários (FII) listados na B3, apenas de fontes públicas gratuitas (CVM Dados Abertos, B3
 COTAHIST, B3 FundosNET). Um pipeline de ingestão em Python grava no Postgres. Uma API em TypeScript (Hono + Kysely)
 virá depois. O consumidor inicial é uma planilha Google Sheets com tabelas grandes (muitos fundos × algumas
-colunas), alimentada por snapshots estáticos no Cloudflare R2: a máquina que roda o pipeline nem sempre está ligada.
+colunas), na qual o pipeline escreve pela Sheets API; os valores ficam gravados lá, porque a máquina que roda o
+pipeline nem sempre está ligada.
+
+A planilha tem uma aba só do pipeline (`fiidb`), reescrita a cada atualização com os fundos da watchlist; as
+abas do autor buscam nela por ticker e usam `GOOGLEFINANCE` para o preço. Nunca escreva fora dessa aba.
 
 Usuários: o autor e alguns conhecidos, sem cobrança. O autor conversa em português.
 
@@ -33,16 +37,18 @@ seeds/fund_overrides.csv correções manuais por ticker (categoria/segmento); re
 pipeline/               projeto Python (uv), pacote `fiidb`
   src/fiidb/
     cli.py              comandos Typer (`fiidb ...`)
-    config.py           variáveis de ambiente → Settings
+    config.py           .env da raiz + variáveis de ambiente → Settings
     db.py               connect (autocommit), upsert via COPY + staging, ingestion_run
     http.py             httpx com retry e cache em disco para arquivos imutáveis
     dates.py            today()/now() no fuso de São Paulo, parse_date
     linking.py          vínculo ticker (security) → fundo (fund)
     seeds.py            carga de seeds/
     watchlist.py        fundos cujos proventos são buscados no FundosNET
-    sources/            um módulo por fonte: cvm_fii, b3_cotahist, fnet
-  tests/                conftest.py (banco de teste), test_parsers.py (sem banco), test_load.py e
-                        test_fnet_load.py (com banco; FundosNET simulado), fixtures/ (amostras reais)
+    sheets.py           escreve a aba `fiidb` da planilha (Google Sheets API, service account)
+    sources/            um módulo por fonte: cvm_fii, b3_cotahist, fnet, b3_funds (desdobramentos)
+  tests/                conftest.py (banco de teste), test_parsers.py (sem banco), test_load.py,
+                        test_fnet_load.py, test_corporate_actions.py, test_sheets.py (APIs simuladas com
+                        httpx.MockTransport), fixtures/ (amostras reais)
 docker-compose.yml      postgres + migrate (dbmate, profile "tools")
 ```
 
@@ -63,8 +69,9 @@ uv run fiidb seed                             # recarrega seeds/fund_overrides.c
 
 uv run fiidb watch add HGLG11 KNRI11          # + 400 dias de proventos (--no-history, --cnpj p/ ticker sem fundo)
 uv run fiidb watch list | remove TICKER
-uv run fiidb fnet-latest                      # últimos avisos de cada fundo da watchlist (rodar com frequência)
+uv run fiidb fnet-latest                      # avisos + desdobramentos da watchlist, e atualiza a planilha (frequente)
 uv run fiidb fnet-history HGLG11 [--since AAAA-MM-DD] [--force]   # histórico completo, ad hoc
+uv run fiidb sheets                           # reescreve a aba da planilha
 
 uv run pytest                                 # parsers
 FIIDB_TEST_DATABASE_URL=postgresql://fiidb:fiidb@localhost:5432/fiidb_test uv run pytest   # + carga
@@ -82,8 +89,13 @@ indicado**; nunca aponte para `fiidb`.
 | `FIIDB_START_YEAR` | `2016` | primeiro ano carregado (CVM e COTAHIST) |
 | `FIIDB_CACHE_DIR` | `~/.cache/fiidb` | COTAHIST anual de anos fechados (~90 MB cada) |
 | `FIIDB_SEEDS_DIR` | `<repo>/seeds` | arquivos de seed |
-| `FIIDB_TEST_DATABASE_URL` | — | habilita `tests/test_load.py` |
+| `FIIDB_SHEET_ID` | — | planilha (ID da URL); sem ele a publicação é pulada |
+| `FIIDB_SHEET_TAB` | `fiidb` | aba que o pipeline reescreve |
+| `FIIDB_GOOGLE_CREDENTIALS` | `~/.config/fiidb/google-service-account.json` | chave JSON da service account (fora do repositório) |
+| `FIIDB_TEST_DATABASE_URL` | — | habilita os testes com banco |
 | `POSTGRES_PASSWORD`, `POSTGRES_PORT` | `fiidb`, `5432` | docker compose (`.env`) |
+
+O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de ambiente reais têm precedência.
 
 ## Convenções
 
@@ -105,6 +117,10 @@ indicado**; nunca aponte para `fiidb`.
 - **FundosNET:** instável (requisições travam). Timeout curto + retries; nunca deixe a falha de um fundo ou
   documento interromper os outros. Só fundos da `watchlist` são consultados. A watchlist fica no banco, não no
   git (o repositório é público e ela pode revelar a carteira do autor).
+- **Valores por cota:** sempre na cota de hoje. Proventos são ajustados por desdobramentos (`distribution_adjusted`);
+  ao criar métricas novas sobre séries por cota (preço, VP), ajuste também ou deixe claro que não está ajustado.
+  Fator de grupamento da B3 ainda não confirmado: não aplique sem um caso real.
+- **Planilha:** colunas da aba `fiidb` são referenciadas por nome nas fórmulas do autor; só acrescente no fim.
 - **Escopo:** somente FII (BDI 12) por enquanto; Fiagro/FI-Infra depois (`fund.type` já existe). Sem fontes pagas,
   sem dados intraday.
 - **Idioma:** código, comentários e `comment on` em inglês; documentação (`docs/`, README, este arquivo) em
@@ -129,7 +145,8 @@ indicado**; nunca aponte para `fiidb`.
 2. ✅ CVM informe mensal + COTAHIST (histórico desde 2016 + diário); classificação `fund_profile`
 3. ✅ Proventos via FundosNET para os fundos da watchlist; vínculo `fnet`; view `fund_metrics` (P/VP, DY 12m,
    liquidez média)
-4. Publicação de snapshots JSON/CSV no R2 + Apps Script que grava valores na planilha
+4. ✅ Planilha: o pipeline escreve a aba `fiidb` direto pela Sheets API (decidido no lugar de R2 + Apps Script:
+   menos peças e dados privados); desdobramentos da B3 aplicados aos proventos
 5. Fiagro e FI-Infra
 6. API Hono/TS com tokens; deploy (Oracle Always Free ou VPS); frontend
 

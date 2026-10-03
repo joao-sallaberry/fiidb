@@ -5,6 +5,7 @@ description = "Ingestion pipeline for Brazilian closed-end fund data (CVM, B3)"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
 dependencies = [
+    "google-auth[requests]>=2.59.1",
     "httpx>=0.28.1",
     "psycopg[binary]>=3.3.6",
     "typer>=0.27.2",

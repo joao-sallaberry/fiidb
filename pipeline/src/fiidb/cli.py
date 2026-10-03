@@ -4,9 +4,9 @@ from typing import Annotated
 
 import typer
 
-from fiidb import config, dates, db, linking, seeds, watchlist
+from fiidb import config, dates, db, linking, seeds, sheets, watchlist
 from fiidb import http as fhttp
-from fiidb.sources import b3_cotahist, cvm_fii, fnet
+from fiidb.sources import b3_cotahist, b3_funds, cvm_fii, fnet
 
 log = logging.getLogger("fiidb")
 
@@ -55,9 +55,23 @@ def catch_up() -> None:
         failed += _fnet_latest(conn)
         _relink(conn)
         log.info("fund overrides loaded: %d", seeds.load_overrides(conn, settings.seeds_dir / "fund_overrides.csv"))
+        failed += _publish_sheet(conn, settings)
     if failed:
         typer.echo(f"failed: {', '.join(failed)}", err=True)
         raise typer.Exit(1)
+
+
+def _publish_sheet(conn, settings: config.Settings) -> list[str]:
+    """Rewrite the spreadsheet tab when one is configured. Returns ["sheets"] on failure."""
+    if not settings.sheet_id:
+        log.info("sheets: FIIDB_SHEET_ID not set; skipped")
+        return []
+    try:
+        sheets.publish(conn, settings.sheet_id, settings.sheet_tab, settings.google_credentials)
+    except Exception:
+        log.exception("sheets publish failed")
+        return ["sheets"]
+    return []
 
 
 def _relink(conn) -> None:
@@ -66,9 +80,31 @@ def _relink(conn) -> None:
     log.info("tickers linked to funds: %s", links)
 
 
-def _fnet_latest(conn) -> list[str]:
-    """Latest notices for every watchlist fund. Returns the tickers that failed."""
+def _corporate_actions(conn, tickers: list[str]) -> list[str]:
+    """Refresh B3 splits/groupings for the given tickers and warn about unexplained price jumps."""
     failed = []
+    with fhttp.client(timeout=b3_funds.TIMEOUT) as http:
+        for ticker in tickers:
+            try:
+                b3_funds.ingest(conn, http, ticker)
+            except Exception:
+                log.exception("b3_funds %s failed", ticker)
+                failed.append(f"b3_funds {ticker}")
+    for ticker, prev_date, trade_date, prev_close, close in b3_funds.unexplained_jumps(conn, tickers):
+        log.warning(
+            "%s: price %s -> %s between %s and %s with no split/grouping listed by B3; check it",
+            ticker,
+            prev_close,
+            close,
+            prev_date,
+            trade_date,
+        )
+    return failed
+
+
+def _fnet_latest(conn) -> list[str]:
+    """Latest notices and corporate actions for every watchlist fund. Returns what failed."""
+    failed = _corporate_actions(conn, [e.ticker for e in watchlist.entries(conn)])
     with fhttp.client(timeout=fnet.TIMEOUT) as http:
         for entry in watchlist.entries(conn):
             if entry.cnpj is None:
@@ -101,11 +137,12 @@ def _fnet_history(conn, entries: list[watchlist.Entry], since: date | None, *, f
 
 @app.command("fnet-latest")
 def fnet_latest_cmd() -> None:
-    """Fetch the latest FundosNET notices for every watchlist fund (run often)."""
+    """Fetch the latest FundosNET notices and B3 corporate actions for every watchlist fund (run often)."""
     settings = config.load()
     with db.connect(settings.database_url) as conn:
         failed = _fnet_latest(conn)
         _relink(conn)
+        failed += _publish_sheet(conn, settings)
     if failed:
         typer.echo(f"failed: {', '.join(failed)}", err=True)
         raise typer.Exit(1)
@@ -153,6 +190,8 @@ def watch_add(
                 continue
             typer.echo(f"added {entry.ticker} ({entry.cnpj} {entry.name or ''})")
             added.append(entry)
+        if added:
+            _corporate_actions(conn, [e.ticker for e in added])
         if history and added:
             failed = _fnet_history(conn, added, dates.today() - timedelta(days=DEFAULT_HISTORY_DAYS))
             _relink(conn)
@@ -218,6 +257,21 @@ def cotahist_cmd(
         else:
             rows = b3_cotahist.ingest_day(conn, http, date.fromisoformat(day))
     typer.echo("not published" if rows is None else f"{rows} quotes")
+
+
+@app.command("sheets")
+def sheets_cmd() -> None:
+    """Rewrite the spreadsheet tab with the watchlist funds (also done by catch-up and fnet-latest)."""
+    settings = config.load()
+    if not settings.sheet_id:
+        raise typer.BadParameter("set FIIDB_SHEET_ID in .env (see README)")
+    try:
+        sheets.load_credentials(settings.google_credentials)
+    except sheets.CredentialsError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    with db.connect(settings.database_url) as conn:
+        typer.echo(f"{sheets.publish(conn, settings.sheet_id, settings.sheet_tab, settings.google_credentials)} funds")
 
 
 @app.command()

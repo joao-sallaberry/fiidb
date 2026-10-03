@@ -13,6 +13,7 @@ flowchart LR
     subgraph B3
         CH["COTAHIST<br/>anual A / diário D"]
         FN["FundosNET<br/>Aviso aos Cotistas Estruturado (XML)"]
+        BF["Página do fundo<br/>stockDividends (JSON)"]
     end
     SEED["seeds/fund_overrides.csv"]
     CLI["fiidb watch add/remove"]
@@ -25,6 +26,8 @@ flowchart LR
     watchlist -- "CNPJs consultados" --> FN
     FN --> fnet_document
     FN --> distribution
+    watchlist -- "tickers" --> BF
+    BF --> corporate_action
     SEED --> fund_override
 
     security -- "fund_id (vínculo)" --> fund
@@ -34,7 +37,10 @@ flowchart LR
     fund_override --> fund_profile
     fund_profile --> fund_metrics(["fund_metrics (view)"])
     quote_daily --> fund_metrics
-    distribution --> fund_metrics
+    distribution --> distribution_adjusted(["distribution_adjusted (view)"])
+    corporate_action --> distribution_adjusted
+    distribution_adjusted --> fund_metrics
+    fund_metrics -- "fiidb sheets" --> SHEET["Google Sheets<br/>aba fiidb"]
 ```
 
 ## Fontes → tabelas
@@ -48,9 +54,11 @@ flowchart LR
 | `distribution` | B3 FundosNET, só fundos da `watchlist` | Rendimentos e amortizações: data-com, pagamento, valor por cota | `(fnet_document_id, isin, kind)` |
 | `fnet_document` | B3 FundosNET (busca) | Avisos já processados: versão, situação (ativo/cancelado/inativo), erro | `id` |
 | `watchlist` | você, via `fiidb watch` (fora do git) | Fundos cujos proventos são buscados; até quando o histórico está completo | `ticker` |
+| `corporate_action` | B3, página do fundo (`stockDividends`), só watchlist | Desdobramentos, grupamentos e bonificações: data-com, fator | `(isin, last_date_prior, kind)` |
 | `fund_override` | `seeds/fund_overrides.csv` (manual) | Correções de categoria/segmento por ticker | `ticker` |
 | `ingestion_run` | o próprio pipeline | Um registro por arquivo processado (hash, status, linhas) | — |
 | `fund_profile` (view) | calculada | Categoria e segmento de cada fundo | — |
+| `distribution_adjusted` (view) | calculada | Proventos ativos, sem duplicatas, com valor por cota de hoje (ajustado por desdobramentos) | — |
 | `fund_metrics` (view) | calculada | Uma linha por ticker: preço, VP/cota, P/VP, último rendimento, DY 12m, liquidez | — |
 
 Descrições por coluna ficam no próprio banco (`\d+ <tabela>` no psql).
@@ -64,8 +72,9 @@ Descrições por coluna ficam no próprio banco (`\d+ <tabela>` no psql).
 | COTAHIST diário | `https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_D{DDMMAAAA}.ZIP` (~400 KB) | Publicado à noite (~20h30) |
 | FundosNET busca | `https://fnet.bmfbovespa.com.br/fnet/publico/pesquisarGerenciadorDocumentosDados` (`idCategoriaDocumento=14`, `idTipoDocumento=41`, `tipoFundo=1`) | Contínua |
 | FundosNET documento | `https://fnet.bmfbovespa.com.br/fnet/publico/downloadDocumento?id={id}` | — |
+| B3 página do fundo | `https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/GetListedSupplementFunds/{base64 de {"cnpj":"0","identifierFund":"HGLG","typeFund":7}}` | Contínua |
 
-Os endpoints do FundosNET não são uma API oficial e podem mudar.
+Os endpoints do FundosNET e da página do fundo na B3 não são APIs oficiais e podem mudar.
 
 ## Fluxo do `catch-up`
 
@@ -109,6 +118,25 @@ Regras:
 - `watchlist.history_since` marca desde quando o histórico está completo (`1900-01-01` = tudo). Só é
   atualizado quando todas as páginas e documentos foram processados sem erro.
 
+## Desdobramentos e grupamentos
+
+Valores por cota mudam de escala num desdobramento: o TEPP11 pagava R$ 0,74 antes do desdobramento 1:10 de
+27/11/2025 e R$ 0,074 depois. Somar os dois sem ajuste dobra o DY.
+
+- **Fonte**: a página do fundo na B3 lista em `stockDividends` todos os eventos, com histórico completo (ex. HGCR11
+  em 2017). Uma requisição por fundo da watchlist, feita junto com `fnet-latest` e `watch add` (`sources/b3_funds.py`).
+  Nem o FundosNET (só PDF de Fato Relevante/Ata) nem o COTAHIST trazem o evento de forma estruturada.
+- **Fator**: em DESDOBRAMENTO e BONIFICACAO, `factor` é o % de cotas novas: 900 = 9 novas por cota = ×10
+  (`multiplier` = 1 + fator/100). A convenção de GRUPAMENTO ainda não foi confirmada com um caso real: o evento é
+  guardado com `multiplier` nulo, **não é aplicado** e gera um aviso no log.
+- **Data**: `lastDatePrior` é a data-com do evento, o último pregão da cota antiga.
+- **Ajuste** (`distribution_adjusted`): cada provento é dividido pelo produto dos multiplicadores dos eventos do
+  mesmo ISIN com data-com **igual ou posterior** à data-com do provento. O valor original fica em `distribution`.
+- **Alerta**: depois de cada execução, saltos de preço de um pregão para o seguinte de 45% ou mais, sem evento
+  listado entre as duas datas, aparecem no log (`b3_funds.unexplained_jumps`). Podem ser um evento que a B3 não
+  lista ou uma queda real; nada é ajustado automaticamente.
+- Preços e VP/cota históricos ainda **não** são ajustados (as métricas usam só os valores mais recentes).
+
 ## Métricas (`fund_metrics`)
 
 View com uma linha por ticker, para a planilha e a futura API.
@@ -118,13 +146,30 @@ View com uma linha por ticker, para a planilha e a futura API.
 | `price`, `price_date` | Último fechamento (sem ajuste) |
 | `nav_per_share`, `net_assets`, `shareholders`, `report_month` | Último informe da CVM com VP/cota |
 | `price_to_nav` | P/VP = `price / nav_per_share` |
-| `last_income*` | Último rendimento (valor, data-com, pagamento). Amortizações não entram |
-| `income_12m`, `dividend_yield_12m` | Soma dos rendimentos com data-com nos últimos 12 meses, e essa soma / `price`. **Só preenchido** para fundos da watchlist com `history_since` ≥ 12 meses atrás; senão NULL (não zero) |
+| `last_income*` | Último rendimento (valor, data-com, pagamento), por cota de hoje. Amortizações não entram |
+| `income_12m`, `dividend_yield_12m` | Soma dos rendimentos com data-com nos últimos 12 meses (ajustados por desdobramentos), e essa soma / `price`. **Só preenchido** para fundos da watchlist com `history_since` ≥ 12 meses atrás; senão NULL (não zero) |
 | `avg_volume_21d` | Volume financeiro médio dos últimos 21 pregões (dentro de 60 dias) |
 | `active`, `watched` | Negociado nos últimos 30 dias; está na watchlist |
 
 Se dois avisos ativos informam o mesmo provento (mesmo ISIN, tipo e data-com), vale o entregue por último.
 Datas relativas ("últimos 12 meses") usam o fuso de São Paulo.
+
+## Google Sheets
+
+`fiidb sheets` (também no fim do `catch-up` e do `fnet-latest`, se `FIIDB_SHEET_ID` estiver configurado) reescreve
+**uma aba só do pipeline** (`FIIDB_SHEET_TAB`, padrão `fiidb`) com os fundos da watchlist. As abas do usuário
+buscam os valores por ticker (`PROCX`), com células manuais e `GOOGLEFINANCE` à vontade: o pipeline nunca escreve
+fora da sua aba.
+
+- Colunas (`sheets.COLUMNS`): `ticker, nome, categoria, segmento, vp_cota, mes_ref_vp, ultimo_rendimento,
+  data_com, data_pagamento, rendimentos_12m, liquidez_media_21d, cotistas, preco_fechamento, data_fechamento,
+  atualizado_em`. As fórmulas do usuário dependem dos nomes: **só acrescente colunas no fim, nunca renomeie**.
+- O pipeline manda os "ingredientes" (VP/cota, soma de 12 meses); P/VP e DY são calculados na planilha com o
+  preço ao vivo do `GOOGLEFINANCE`.
+- Escrita: `PUT` a partir de A1 com `USER_ENTERED` (datas ISO viram datas), depois limpa as linhas abaixo; a aba
+  é criada se não existir.
+- Autenticação: service account (`FIIDB_GOOGLE_CREDENTIALS`, padrão `~/.config/fiidb/google-service-account.json`);
+  a planilha precisa estar compartilhada com o e-mail dela como Editor. Configuração em README.
 
 ## Regras de carga
 
@@ -185,10 +230,13 @@ O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é
 | FundosNET | Busca por CNPJ só aceita o formato com pontuação | `fnet.format_cnpj` |
 | FundosNET | Dois layouts de XML: antes de ~set/2022, ISIN/ticker em `DadosGerais` (`CodISINCota`), valor em `ValorProventoCota`, isenção `true`/`false`; depois, um `Provento` por classe com `CodISIN` e `ValorProvento`, isenção `Sim`/`Não` | `fnet.parse_xml` aceita os dois |
 | FundosNET | Avisos de recibos de subscrição (HGLG13, HGLG14…) vêm junto com os da cota principal | Guardados com o próprio ISIN; métricas usam o ISIN do ticker |
+| B3/FundosNET | Valores por cota de antes de um desdobramento estão na escala antiga (TEPP11: 0,74 → 0,074) | `corporate_action` + `distribution_adjusted` |
+| B3 | Fator de desdobramento publicado como % de cotas novas (900 = ×10) | `b3_funds.multiplier` |
 
 ## Testes
 
 - `uv run pytest`: parsers, com fixtures reais em `pipeline/tests/fixtures/`.
 - Com `FIIDB_TEST_DATABASE_URL` apontando para um banco descartável, também os testes de carga
-  (`tests/test_load.py`, `tests/test_fnet_load.py`; fixtures em `tests/conftest.py`). Eles **apagam o schema
+  (`tests/test_load.py`, `tests/test_fnet_load.py`, `tests/test_corporate_actions.py`, `tests/test_sheets.py`;
+  fixtures em `tests/conftest.py`). Eles **apagam o schema
   `public`** desse banco e aplicam `db/migrations`. O FundosNET é simulado com `httpx.MockTransport`.
