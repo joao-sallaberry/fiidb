@@ -52,6 +52,14 @@ def remove(conn: psycopg.Connection, ticker: str) -> bool:
     return conn.execute("delete from watchlist where ticker = %s", (ticker.strip().upper(),)).rowcount > 0
 
 
+def notice_tickers(conn: psycopg.Connection, cnpj: str) -> set[str]:
+    """Tickers named in the FundosNET notices stored for a CNPJ."""
+    rows = conn.execute(
+        "select distinct ticker from distribution where fund_cnpj = %s and ticker is not null", (cnpj,)
+    ).fetchall()
+    return {t for (t,) in rows}
+
+
 def mark_history(conn: psycopg.Connection, ticker: str, since: date) -> None:
     conn.execute(
         "update watchlist set history_since = least(coalesce(history_since, %(since)s), %(since)s) where ticker = %(t)s",

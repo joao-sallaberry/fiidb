@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -16,8 +17,14 @@ def test_parse_b3_split():
 
 def test_multiplier_conventions():
     assert b3_funds.multiplier("BONIFICACAO", "10,00000000000") == Decimal("1.1")
-    assert b3_funds.multiplier("GRUPAMENTO", "10,00000000000") is None  # not confirmed: never applied
+    assert b3_funds.multiplier("GRUPAMENTO", "0,02000000000") == Decimal("0.02")  # 50 shares become 1
+    assert b3_funds.multiplier("RESG TOTAL RV", "100,00000000000") is None
     assert b3_funds.parse(b"{}") == []
+
+
+def test_repeated_event_in_payload_is_kept_once():
+    event = {"isinCode": "BRX", "lastDatePrior": "21/12/2021", "label": "RESG TOTAL RV", "factor": "100,0"}
+    assert len(b3_funds.parse(json.dumps({"stockDividends": [event, event]}).encode())) == 1
 
 
 def add_distribution(conn, doc_id, base_date, amount):
@@ -71,3 +78,27 @@ def test_unexplained_price_jump_is_reported(conn, load_fixtures):
         key=["isin", "last_date_prior", "kind"],
     )
     assert b3_funds.unexplained_jumps(conn, ["HGLG11"]) == []
+
+
+def test_manual_corporate_actions_seed(conn, load_fixtures, tmp_path):
+    import pytest
+
+    from fiidb import seeds
+
+    load_fixtures(conn)
+    csv_path = tmp_path / "corporate_actions.csv"
+    csv_path.write_text("ticker,last_date_prior,kind,multiplier,note\nhglg11,2018-04-17,desdobramento,10,x\n")
+    assert seeds.load_corporate_actions(conn, csv_path) == 1
+    assert conn.execute("select isin, multiplier, source from corporate_action").fetchone() == (
+        "BRHGLGCTF004",
+        Decimal(10),
+        "manual",
+    )
+
+    csv_path.write_text("ticker,last_date_prior,kind,multiplier,note\n")  # removed from the CSV -> removed
+    seeds.load_corporate_actions(conn, csv_path)
+    assert conn.execute("select count(*) from corporate_action").fetchone() == (0,)
+
+    csv_path.write_text("ticker,last_date_prior,kind,multiplier,note\nXXXX11,2018-04-17,DESDOBRAMENTO,10,x\n")
+    with pytest.raises(ValueError, match="unknown ticker"):
+        seeds.load_corporate_actions(conn, csv_path)

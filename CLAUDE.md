@@ -33,7 +33,9 @@ tamanhos, nomes de arquivos).
 ```
 db/migrations/          SQL puro (dbmate): schema, views e comentários. O banco é o contrato Python ↔ TS.
 docs/ingestion.md       arquitetura da ingestão
-seeds/fund_overrides.csv correções manuais por ticker (categoria/segmento); recarregado a cada catch-up
+seeds/                  dados manuais, recarregados a cada catch-up e por `fiidb seed`:
+  fund_overrides.csv    categoria/segmento por ticker
+  corporate_actions.csv desdobramentos que a B3 não lista e alertas de preço revisados (REVIEWED, ×1)
 pipeline/               projeto Python (uv), pacote `fiidb`
   src/fiidb/
     cli.py              comandos Typer (`fiidb ...`)
@@ -65,7 +67,7 @@ uv run fiidb catch-up                         # idempotente; baixa só o que fal
 uv run fiidb status                           # contagens + última execução por fonte
 uv run fiidb cvm-fii 2025 --force             # recarrega um ano da CVM mesmo sem mudança
 uv run fiidb cotahist --year 2024             # ou --day 2026-10-01
-uv run fiidb seed                             # recarrega seeds/fund_overrides.csv
+uv run fiidb seed                             # recarrega seeds/*.csv
 
 uv run fiidb watch add HGLG11 KNRI11          # + 400 dias de proventos (--no-history, --cnpj p/ ticker sem fundo)
 uv run fiidb watch list | remove TICKER
@@ -119,7 +121,8 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
   git (o repositório é público e ela pode revelar a carteira do autor).
 - **Valores por cota:** sempre na cota de hoje. Proventos são ajustados por desdobramentos (`distribution_adjusted`);
   ao criar métricas novas sobre séries por cota (preço, VP), ajuste também ou deixe claro que não está ajustado.
-  Fator de grupamento da B3 ainda não confirmado: não aplique sem um caso real.
+  A B3 nem sempre lista eventos antigos: o alerta de salto de preço aponta os casos; registre-os em
+  `seeds/corporate_actions.csv` só com evidência (preço + cotas na CVM) na nota.
 - **Planilha:** colunas da aba `fiidb` são referenciadas por nome nas fórmulas do autor; só acrescente no fim.
 - **Escopo:** somente FII (BDI 12) por enquanto; Fiagro/FI-Infra depois (`fund.type` já existe). Sem fontes pagas,
   sem dados intraday.
@@ -150,6 +153,7 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
 5. Fiagro e FI-Infra
 6. API Hono/TS com tokens; deploy (Oracle Always Free ou VPS); frontend
 
-Pendências conhecidas: ~48 tickers negociados sem fundo vinculado (usar `watch add --cnpj` para os de interesse);
+Pendências conhecidas: ~44 tickers negociados sem fundo vinculado (usar `watch add --cnpj`, CNPJ confirmado pelo
+ticker no XML de um aviso do FundosNET; ver docs/ingestion.md);
 agendamento dos jobs (`catch-up` no boot/diário, `fnet-latest` frequente) ainda não configurado; segmento vazio para
 ~80 fundos de tijolo negociados que se declaram "Multicategoria" (preencher via `seeds/fund_overrides.csv`).

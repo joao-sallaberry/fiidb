@@ -1,0 +1,4 @@
+ticker,last_date_prior,kind,multiplier,note
+HGBS11,2018-04-26,DESDOBRAMENTO,10,"Not listed by B3. Close 2356.00 -> 241.00 on 2018-04-27; CVM shares 537492 (2018-03) -> 5374920 (2018-05)"
+RBVA11,2019-05-31,DESDOBRAMENTO,10,"Not listed by B3. Close 1270.00 -> 132.32 on 2019-06-03; CVM shares 405000 (2019-05) -> 4050000 (2019-07)"
+VIUR11,2026-04-08,REVIEWED,1,"Not a split: price 5.87 -> 2.41 on 2026-04-09 with CVM shares unchanged (26946220) and net assets 206M -> 94M (capital return). Silences the price-jump alert."

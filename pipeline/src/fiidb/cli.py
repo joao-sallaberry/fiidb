@@ -54,7 +54,7 @@ def catch_up() -> None:
             failed.append("b3_cotahist")
         failed += _fnet_latest(conn)
         _relink(conn)
-        log.info("fund overrides loaded: %d", seeds.load_overrides(conn, settings.seeds_dir / "fund_overrides.csv"))
+        _load_seeds(conn, settings)
         failed += _publish_sheet(conn, settings)
     if failed:
         typer.echo(f"failed: {', '.join(failed)}", err=True)
@@ -72,6 +72,12 @@ def _publish_sheet(conn, settings: config.Settings) -> list[str]:
         log.exception("sheets publish failed")
         return ["sheets"]
     return []
+
+
+def _load_seeds(conn, settings: config.Settings) -> None:
+    log.info("fund overrides loaded: %d", seeds.load_overrides(conn, settings.seeds_dir / "fund_overrides.csv"))
+    actions = seeds.load_corporate_actions(conn, settings.seeds_dir / "corporate_actions.csv")
+    log.info("manual corporate actions loaded: %d", actions)
 
 
 def _relink(conn) -> None:
@@ -129,6 +135,16 @@ def _fnet_history(conn, entries: list[watchlist.Entry], since: date | None, *, f
                     watchlist.mark_history(conn, entry.ticker, since or watchlist.FULL_HISTORY)
                 else:
                     failed.append(entry.ticker)
+                named = watchlist.notice_tickers(conn, entry.cnpj)
+                if named and entry.ticker not in named:
+                    log.warning(
+                        "%s: the notices of CNPJ %s name %s, not %s; wrong fund? fix with `fiidb watch add %s --cnpj ...`",
+                        entry.ticker,
+                        entry.cnpj,
+                        ", ".join(sorted(named)),
+                        entry.ticker,
+                        entry.ticker,
+                    )
             except Exception:
                 log.exception("fnet history %s failed", entry.ticker)
                 failed.append(entry.ticker)
@@ -279,7 +295,7 @@ def seed() -> None:
     """Reload manual data from seeds/ (also done at the end of catch-up)."""
     settings = config.load()
     with db.connect(settings.database_url) as conn:
-        typer.echo(f"{seeds.load_overrides(conn, settings.seeds_dir / 'fund_overrides.csv')} fund overrides")
+        _load_seeds(conn, settings)
 
 
 @app.command()

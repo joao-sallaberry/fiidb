@@ -56,6 +56,7 @@ flowchart LR
 | `watchlist` | você, via `fiidb watch` (fora do git) | Fundos cujos proventos são buscados; até quando o histórico está completo | `ticker` |
 | `corporate_action` | B3, página do fundo (`stockDividends`), só watchlist | Desdobramentos, grupamentos e bonificações: data-com, fator | `(isin, last_date_prior, kind)` |
 | `fund_override` | `seeds/fund_overrides.csv` (manual) | Correções de categoria/segmento por ticker | `ticker` |
+| `corporate_action` (`source = 'manual'`) | `seeds/corporate_actions.csv` (manual) | Eventos que a B3 não lista e alertas revisados | `(isin, last_date_prior, kind)` |
 | `ingestion_run` | o próprio pipeline | Um registro por arquivo processado (hash, status, linhas) | — |
 | `fund_profile` (view) | calculada | Categoria e segmento de cada fundo | — |
 | `distribution_adjusted` (view) | calculada | Proventos ativos, sem duplicatas, com valor por cota de hoje (ajustado por desdobramentos) | — |
@@ -88,7 +89,7 @@ Os endpoints do FundosNET e da página do fundo na B3 não são APIs oficiais e 
      404 = feriado ou ainda não publicado (é tentado de novo na próxima execução).
 3. **FundosNET**: o mesmo que `fiidb fnet-latest` (abaixo).
 4. **Vínculo ticker → fundo** (`fiidb/linking.py`), detalhado abaixo.
-5. **Seeds**: substitui `fund_override` pelo conteúdo do CSV.
+5. **Seeds**: substitui `fund_override` e os eventos manuais de `corporate_action` pelo conteúdo dos CSVs.
 
 Cada arquivo é uma transação própria (conexão em autocommit + `conn.transaction()`). Falhas são registradas em
 `ingestion_run` com `status = 'error'`, os demais arquivos seguem, e o comando sai com código 1.
@@ -127,14 +128,21 @@ Valores por cota mudam de escala num desdobramento: o TEPP11 pagava R$ 0,74 ante
   em 2017). Uma requisição por fundo da watchlist, feita junto com `fnet-latest` e `watch add` (`sources/b3_funds.py`).
   Nem o FundosNET (só PDF de Fato Relevante/Ata) nem o COTAHIST trazem o evento de forma estruturada.
 - **Fator**: em DESDOBRAMENTO e BONIFICACAO, `factor` é o % de cotas novas: 900 = 9 novas por cota = ×10
-  (`multiplier` = 1 + fator/100). A convenção de GRUPAMENTO ainda não foi confirmada com um caso real: o evento é
-  guardado com `multiplier` nulo, **não é aplicado** e gera um aviso no log.
+  (`multiplier` = 1 + fator/100). Em GRUPAMENTO, `factor` já é o multiplicador: 0,02 = 50 cotas viram 1
+  (confirmado pelo FLMA11: fator 0,02 em 31/05/2021, preço 2,91 → 139,22). Outros tipos, como `RESG TOTAL RV`
+  (resgate de recibos/direitos), não mudam a cota: são guardados sem multiplicador e não aplicados (log na primeira
+  vez que aparecem).
+- **Histórico incompleto**: a B3 às vezes lista só o evento mais recente. HGBS11 e RBVA11 tiveram desdobramentos
+  ×10 em 2018/2019 que não aparecem, só os de 2025. Eventos assim vão em **`seeds/corporate_actions.csv`**
+  (`source = 'manual'`), sempre com a evidência na nota (salto de preço + número de cotas na CVM).
 - **Data**: `lastDatePrior` é a data-com do evento, o último pregão da cota antiga.
 - **Ajuste** (`distribution_adjusted`): cada provento é dividido pelo produto dos multiplicadores dos eventos do
   mesmo ISIN com data-com **igual ou posterior** à data-com do provento. O valor original fica em `distribution`.
 - **Alerta**: depois de cada execução, saltos de preço de um pregão para o seguinte de 45% ou mais, sem evento
-  listado entre as duas datas, aparecem no log (`b3_funds.unexplained_jumps`). Podem ser um evento que a B3 não
-  lista ou uma queda real; nada é ajustado automaticamente.
+  entre as duas datas, aparecem no log (`b3_funds.unexplained_jumps`). Podem ser um evento que a B3 não lista
+  (registre no CSV com o multiplicador) ou um movimento real, como a devolução de capital do VIUR11 em abril/2026
+  (registre como `REVIEWED` com multiplicador 1, o que silencia o alerta sem ajustar nada). Nada é ajustado
+  automaticamente.
 - Preços e VP/cota históricos ainda **não** são ajustados (as métricas usam só os valores mais recentes).
 
 ## Métricas (`fund_metrics`)
@@ -189,13 +197,20 @@ vazio, com erro de digitação ou de recibo de subscrição (`...R01M...`). Os m
 | `link_method` | Regra |
 |---|---|
 | `fnet` | ISIN de um provento do FundosNET, buscado pelo CNPJ do fundo (só fundos da watchlist) |
-| `isin` | ISIN do COTAHIST = ISIN informado à CVM, se só um fundo o informa (ou só um deles é listado em bolsa) |
+| `isin` | ISIN do COTAHIST = ISIN informado à CVM, se só um fundo o informa |
 | `isin_issuer` | Mesmo código de emissor (caracteres 3–6 do ISIN, ex. `BR`**`HGLG`**`CTF004`) e só um fundo com ele |
 
 Fundos *feeder* costumam informar o ISIN do fundo principal (o `BRSPTWCTF002` aparece em 7 fundos). Um ISIN
-ambíguo não vincula nada, e vínculos `isin` que ficaram ambíguos são desfeitos (`isin_stale`).
+ambíguo não vincula nada, e vínculos `isin` que ficaram ambíguos são desfeitos (`isin_stale`). Desempatar pelo
+fundo que se declara listado em bolsa foi tentado e ligou KISU11 e HUSC11 a fundos errados: o campo
+`Mercado_Negociacao_Bolsa` da CVM não é confiável.
 
-Hoje ~48 tickers negociados ficam sem fundo. Para um deles entrar na watchlist, use
+Para descobrir o CNPJ de um ticker sem vínculo: os avisos recentes do FundosNET (busca sem filtro de CNPJ) têm
+`nomePregao` igual ao `short_name` do COTAHIST, e o XML de cada aviso traz `CNPJFundo` e o ticker. Confirme o
+ticker no XML antes de usar o CNPJ. Ao carregar o histórico, o pipeline avisa se os avisos de um CNPJ citam outros
+tickers e não o da watchlist (sinal de CNPJ errado).
+
+Hoje ~44 tickers negociados ficam sem fundo. Para um deles entrar na watchlist, use
 `fiidb watch add TICKER --cnpj <cnpj>`; o vínculo `fnet` passa a valer depois da primeira carga.
 
 ## Classificação (`fund_profile`)

@@ -5,8 +5,9 @@ The endpoint behind https://sistemaswebb3-listados.b3.com.br/fundsPage/ returns,
 API. Only watchlist funds are queried, one request each.
 
 Factor conventions: for DESDOBRAMENTO and BONIFICACAO the factor is the percentage of new shares
-(900 = 9 new shares per share, i.e. x10). The GRUPAMENTO convention has not been confirmed with a
-real case, so those events are stored with a null multiplier (not applied) and logged.
+(900 = 9 new shares per share, i.e. x10). For GRUPAMENTO it is the multiplier itself (0,02 = 50
+shares become 1), confirmed by FLMA11 (factor 0,02 on 2021-05-31; price 2.91 -> 139.22). Other kinds
+(e.g. RESG TOTAL RV, redemption of receipts) do not change the share and are stored unapplied.
 """
 
 import base64
@@ -31,6 +32,7 @@ TIMEOUT = 20
 RETRIES = 4
 
 PERCENT_OF_NEW_SHARES = {"DESDOBRAMENTO", "BONIFICACAO", "BONIFICAÇÃO"}
+DIRECT_MULTIPLIER = {"GRUPAMENTO"}
 
 
 @dataclass
@@ -51,12 +53,14 @@ def multiplier(kind: str, factor_raw: str) -> Decimal | None:
     """Shares after per share before, or None when the convention for `kind` is unknown."""
     if kind.upper() in PERCENT_OF_NEW_SHARES:
         return 1 + _decimal(factor_raw) / 100
+    if kind.upper() in DIRECT_MULTIPLIER:
+        return _decimal(factor_raw)
     return None
 
 
 def parse(data: bytes) -> list[CorporateAction]:
     payload = json.loads(data or b"{}") or {}
-    out = []
+    out: dict[tuple, CorporateAction] = {}  # B3 sometimes repeats an event in the same payload
     for event in payload.get("stockDividends") or []:
         isin = (event.get("isinCode") or event.get("assetIssued") or "").strip()
         last_date = parse_date(event.get("lastDatePrior"))
@@ -64,12 +68,10 @@ def parse(data: bytes) -> list[CorporateAction]:
         factor = (event.get("factor") or "").strip()
         if not (isin and last_date and kind and factor):
             continue
-        out.append(
-            CorporateAction(
-                isin, last_date, kind, factor, multiplier(kind, factor), parse_date(event.get("approvedOn"))
-            )
+        out[(isin, last_date, kind)] = CorporateAction(
+            isin, last_date, kind, factor, multiplier(kind, factor), parse_date(event.get("approvedOn"))
         )
-    return out
+    return list(out.values())
 
 
 def fetch(http: httpx.Client, ticker: str) -> bytes:
@@ -84,10 +86,16 @@ COLUMNS = ["isin", "last_date_prior", "kind", "ticker", "factor_raw", "multiplie
 def ingest(conn: psycopg.Connection, http: httpx.Client, ticker: str) -> int:
     started = dates.now()
     actions = parse(fetch(http, ticker))
+    known = set(
+        conn.execute(
+            "select isin, last_date_prior, kind from corporate_action where isin = any(%s)",
+            (list({a.isin for a in actions}),),
+        ).fetchall()
+    )
     for a in actions:
-        if a.multiplier is None:
+        if a.multiplier is None and (a.isin, a.last_date_prior, a.kind) not in known:  # warn once, when first seen
             log.warning(
-                "%s %s: %s on %s (factor %s) not applied: convention unknown",
+                "%s %s: %s on %s (factor %s) is not a split, grouping or bonus; not applied",
                 SOURCE,
                 ticker,
                 a.kind,

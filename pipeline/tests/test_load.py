@@ -60,16 +60,15 @@ def test_fund_profile_category_and_override(conn, load_fixtures, tmp_path):
     assert conn.execute("select source from fund_profile where ticker = 'HGLG11'").fetchone() == ("computed",)
 
 
-def test_isin_shared_by_several_funds(conn, load_fixtures):
+def test_isin_shared_by_several_funds_links_nothing(conn, load_fixtures):
     load_fixtures(conn)
-    # A feeder fund reporting HGLG11's ISIN must not steal the link while it is not listed...
+    linking.link_securities(conn)
+    assert conn.execute("select link_method from security where ticker = 'HGLG11'").fetchone() == ("isin",)
+
+    # A feeder reporting the same ISIN makes it ambiguous: the link is dropped, even if only one of the
+    # funds says it is exchange-listed (CVM's flag is unreliable).
     conn.execute(
         "insert into fund (cnpj, name, isin, listed) values ('99999999000199', 'FEEDER', 'BRHGLGCTF004', false)"
     )
-    linking.link_securities(conn)
-    assert conn.execute("select f.name from security s join fund f on f.id = s.fund_id").fetchone()[0] != "FEEDER"
-
-    # ...and when two listed funds claim it, the link is dropped instead of guessed.
-    conn.execute("update fund set listed = true where cnpj = '99999999000199'")
-    linking.link_securities(conn)
+    assert linking.link_securities(conn)["isin_stale"] == 1
     assert conn.execute("select fund_id, link_method from security where ticker = 'HGLG11'").fetchone() == (None, None)

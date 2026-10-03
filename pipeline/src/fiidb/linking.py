@@ -8,18 +8,14 @@ stronger links are never overwritten by weaker ones.
 import psycopg
 
 # Feeder funds often report the master fund's ISIN, so one ISIN may belong to several CVM funds.
-# It only identifies a fund when a single fund reports it, or a single one of them is exchange-listed.
+# It only identifies a fund when a single fund reports it. (Preferring the one that says it is
+# exchange-listed was tried and linked KISU11 and HUSC11 to the wrong funds: CVM's flag is unreliable.)
 UNAMBIGUOUS_ISIN = """
-    select isin, id as fund_id
-    from (
-        select isin, id,
-            row_number() over (partition by isin order by listed desc nulls last, id) as rank,
-            count(*) over (partition by isin) as funds,
-            count(*) filter (where listed) over (partition by isin) as listed_funds
-        from fund
-        where isin is not null
-    ) candidates
-    where rank = 1 and (funds = 1 or listed_funds = 1)
+    select isin, min(id) as fund_id
+    from fund
+    where isin is not null
+    group by isin
+    having count(*) = 1
 """
 
 STEPS = {
