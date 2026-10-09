@@ -18,10 +18,11 @@ def upsert(
     *,
     update: Sequence[str] | None = None,
     where: str | None = None,
+    key_where: str | None = None,
 ) -> int:
     """Bulk upsert through COPY into a staging table. `rows` must not repeat a key.
     `update` defaults to every non-key column; `where` guards the DO UPDATE (may reference
-    `excluded` and the target table)."""
+    `excluded` and the target table); `key_where` is the predicate of a partial unique index."""
     update = [c for c in columns if c not in key] if update is None else update
     cols = ", ".join(columns)
     stage = f"_stage_{table}"
@@ -33,7 +34,8 @@ def upsert(
         action = "do update set " + ", ".join(f"{c} = excluded.{c}" for c in update) if update else "do nothing"
         if update and where:
             action += f" where {where}"
-        cur.execute(f"insert into {table} ({cols}) select {cols} from {stage} on conflict ({', '.join(key)}) {action}")
+        target = f"({', '.join(key)})" + (f" where {key_where}" if key_where else "")
+        cur.execute(f"insert into {table} ({cols}) select {cols} from {stage} on conflict {target} {action}")
         affected = cur.rowcount
         cur.execute(f"drop table {stage}")
     return affected

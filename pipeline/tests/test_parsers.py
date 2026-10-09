@@ -7,11 +7,12 @@ from fiidb.sources import b3_cotahist, cvm_fii, fnet
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_cotahist_keeps_only_fii_spot_quotes():
+def test_cotahist_keeps_fii_and_bdi14_spot_quotes():
     lines = (FIXTURES / "cotahist_sample.txt").read_text(encoding="latin-1").splitlines()
     quotes = list(b3_cotahist.parse_lines(lines))
 
-    assert [q.ticker for q in quotes] == ["HGLG11"]  # stock, Fiagro and FI-Infra lines are skipped
+    assert [q.ticker for q in quotes] == ["HGLG11", "KNCA11", "JURO11"]  # the stock line is skipped
+    assert [q.bdi_code for q in quotes] == ["12", "14", "14"]
     q = quotes[0]
     assert q.trade_date == date(2026, 10, 1)
     assert q.isin == "BRHGLGCTF004"

@@ -2,7 +2,8 @@
 
 The ISIN a fund reports to CVM is frequently missing, mistyped or points to a subscription
 receipt, so matching falls back from the strongest evidence to the weakest. Earlier,
-stronger links are never overwritten by weaker ones.
+stronger links are never overwritten by weaker ones. ISIN matching only applies to FIIs (BDI 12):
+FI-Infra funds have no ISIN at CVM and are linked by the CNPJ given in the watchlist.
 """
 
 import psycopg
@@ -25,9 +26,17 @@ STEPS = {
         from (
             select distinct on (d.isin) d.isin, f.id fund_id
             from distribution d join fund f on f.cnpj = d.fund_cnpj
+            where d.source = 'fnet'
             order by d.isin, d.delivered_at desc nulls last
         ) m
         where s.isin = m.isin and (s.fund_id is distinct from m.fund_id or s.link_method is distinct from 'fnet')
+    """,
+    # CNPJ given with `fiidb watch add --cnpj` (checked against B3 shares x NAV when added).
+    "watchlist": """
+        update security s set fund_id = f.id, link_method = 'watchlist'
+        from watchlist w join fund f on f.cnpj = w.cnpj
+        where s.ticker = w.ticker and s.link_method is distinct from 'fnet'
+            and (s.fund_id is distinct from f.id or s.link_method is distinct from 'watchlist')
     """,
     # Drop ISIN links that are no longer unambiguous (see UNAMBIGUOUS_ISIN).
     "isin_stale": f"""
@@ -38,7 +47,7 @@ STEPS = {
     "isin": f"""
         update security s set fund_id = u.fund_id, link_method = 'isin'
         from ({UNAMBIGUOUS_ISIN}) u
-        where u.isin = s.isin and s.link_method is distinct from 'fnet'
+        where u.isin = s.isin and s.bdi_code = '12' and coalesce(s.link_method, '') not in ('fnet', 'watchlist')
             and (s.fund_id is distinct from u.fund_id or s.link_method is distinct from 'isin')
     """,
     # Same issuer code (ISIN chars 3-6, e.g. BR[HGLG]CTF004), when exactly one fund has it.
@@ -46,10 +55,10 @@ STEPS = {
         update security s set fund_id = m.fund_id, link_method = 'isin_issuer'
         from (
             select substr(isin, 3, 4) issuer, min(id) fund_id
-            from fund where length(isin) = 12
+            from fund where length(isin) = 12 and type = 'FII'
             group by 1 having count(*) = 1
         ) m
-        where s.fund_id is null and substr(s.isin, 3, 4) = m.issuer
+        where s.fund_id is null and s.bdi_code = '12' and substr(s.isin, 3, 4) = m.issuer
     """,
 }
 

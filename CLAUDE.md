@@ -1,10 +1,10 @@
 # fiidb
 
-Dados de fundos imobiliários (FII) listados na B3, apenas de fontes públicas gratuitas (CVM Dados Abertos, B3
-COTAHIST, B3 FundosNET). Um pipeline de ingestão em Python grava no Postgres. Uma API em TypeScript (Hono + Kysely)
-virá depois. O consumidor inicial é uma planilha Google Sheets com tabelas grandes (muitos fundos × algumas
-colunas), na qual o pipeline escreve pela Sheets API; os valores ficam gravados lá, porque a máquina que roda o
-pipeline nem sempre está ligada.
+Dados de fundos imobiliários (FII) e de infraestrutura (FI-Infra) listados na B3, apenas de fontes públicas
+gratuitas (CVM Dados Abertos, B3 COTAHIST, B3 FundosNET, página do fundo na B3). Um pipeline de ingestão em Python
+grava no Postgres. Uma API em TypeScript (Hono + Kysely) virá depois. O consumidor inicial é uma planilha Google
+Sheets com tabelas grandes (muitos fundos × algumas colunas), na qual o pipeline escreve pela Sheets API; os valores
+ficam gravados lá, porque a máquina que roda o pipeline nem sempre está ligada.
 
 A planilha tem uma aba só do pipeline (`fiidb`), reescrita a cada atualização com os fundos da watchlist; as
 abas do autor buscam nela por ticker e usam `GOOGLEFINANCE` para o preço. Nunca escreva fora dessa aba.
@@ -45,12 +45,13 @@ pipeline/               projeto Python (uv), pacote `fiidb`
     dates.py            today()/now() no fuso de São Paulo, parse_date
     linking.py          vínculo ticker (security) → fundo (fund)
     seeds.py            carga de seeds/
-    watchlist.py        fundos cujos proventos são buscados no FundosNET
+    watchlist.py        fundos cujos proventos são buscados (FundosNET para FII, página da B3 para FI-Infra)
     sheets.py           escreve a aba `fiidb` da planilha (Google Sheets API, service account)
-    sources/            um módulo por fonte: cvm_fii, b3_cotahist, fnet, b3_funds (desdobramentos)
+    sources/            um módulo por fonte: cvm_fii, cvm_fi (cadastro + informe diário, FI-Infra), b3_cotahist,
+                        fnet, b3_funds (desdobramentos; proventos de FI-Infra)
   tests/                conftest.py (banco de teste), test_parsers.py (sem banco), test_load.py,
-                        test_fnet_load.py, test_corporate_actions.py, test_sheets.py (APIs simuladas com
-                        httpx.MockTransport), fixtures/ (amostras reais)
+                        test_fnet_load.py, test_corporate_actions.py, test_sheets.py, test_fiinfra.py (APIs
+                        simuladas com httpx.MockTransport), fixtures/ (amostras reais)
 docker-compose.yml      postgres + migrate (dbmate, profile "tools")
 ```
 
@@ -70,8 +71,10 @@ uv run fiidb cotahist --year 2024             # ou --day 2026-10-01
 uv run fiidb seed                             # recarrega seeds/*.csv
 
 uv run fiidb watch add HGLG11 KNRI11          # + 400 dias de proventos (--no-history, --cnpj p/ ticker sem fundo)
+uv run fiidb watch add KDIF11 --cnpj 26.324.298/0001-89   # FI-Infra: CNPJ obrigatório, conferido (cotas × VP = PL)
 uv run fiidb watch list | remove TICKER
-uv run fiidb fnet-latest                      # avisos + desdobramentos da watchlist, e atualiza a planilha (frequente)
+uv run fiidb fnet-latest                      # avisos (FII), proventos B3 (FI-Infra) e desdobramentos da watchlist,
+                                              # e atualiza a planilha (frequente)
 uv run fiidb fnet-history HGLG11 [--since AAAA-MM-DD] [--force]   # histórico completo, ad hoc
 uv run fiidb sheets                           # reescreve a aba da planilha
 
@@ -124,8 +127,8 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
   A B3 nem sempre lista eventos antigos: o alerta de salto de preço aponta os casos; registre-os em
   `seeds/corporate_actions.csv` só com evidência (preço + cotas na CVM) na nota.
 - **Planilha:** colunas da aba `fiidb` são referenciadas por nome nas fórmulas do autor; só acrescente no fim.
-- **Escopo:** somente FII (BDI 12) por enquanto; Fiagro/FI-Infra depois (`fund.type` já existe). Sem fontes pagas,
-  sem dados intraday.
+- **Escopo:** FII (BDI 12, todos) e FI-Infra (BDI 14, só os da watchlist, `fund.type = 'FIINFRA'`); Fiagro
+  depois. O COTAHIST carrega todo o BDI 14 (ETFs, FIPs etc. ficam sem fundo). Sem fontes pagas, sem dados intraday.
 - **Idioma:** código, comentários e `comment on` em inglês; documentação (`docs/`, README, este arquivo) em
   português.
 - **Git:** branch `master`, remoto `origin` = github.com/joao-sallaberry/fiidb (**público**). Commits e pushes só
@@ -139,7 +142,7 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
   socket, a sessão foi aberta antes de entrar no grupo: reinicie a sessão.
 - O dbmate roda como root no container, por isso o dump `db/schema.sql` está desligado
   (`DBMATE_NO_DUMP_SCHEMA`).
-- Primeira carga completa: ~1 GB de download (COTAHIST) e alguns minutos. Com o cache, ~1 minuto. Banco ~200 MB.
+- Primeira carga completa: ~1 GB de download (COTAHIST) e alguns minutos. Com o cache, ~1 minuto. Banco ~370 MB.
 - O COTAHIST diário sai por volta das 20h30; antes disso, o 404 do dia é esperado.
 
 ## Plano
@@ -150,10 +153,10 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
    liquidez média)
 4. ✅ Planilha: o pipeline escreve a aba `fiidb` direto pela Sheets API (decidido no lugar de R2 + Apps Script:
    menos peças e dados privados); desdobramentos da B3 aplicados aos proventos
-5. Fiagro e FI-Infra
+5. ✅ FI-Infra (VP diário da CVM, proventos da página da B3, CNPJ informado na watchlist); Fiagro pendente
 6. API Hono/TS com tokens; deploy (Oracle Always Free ou VPS); frontend
 
-Pendências conhecidas: ~44 tickers negociados sem fundo vinculado (usar `watch add --cnpj`, CNPJ confirmado pelo
-ticker no XML de um aviso do FundosNET; ver docs/ingestion.md);
+Pendências conhecidas: ~37 tickers de FII negociados sem fundo vinculado (usar `watch add --cnpj`, CNPJ confirmado
+pelo ticker no XML de um aviso do FundosNET; ver docs/ingestion.md);
 agendamento dos jobs (`catch-up` no boot/diário, `fnet-latest` frequente) ainda não configurado; segmento vazio para
 ~80 fundos de tijolo negociados que se declaram "Multicategoria" (preencher via `seeds/fund_overrides.csv`).

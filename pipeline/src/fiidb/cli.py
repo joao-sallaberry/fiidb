@@ -1,17 +1,18 @@
 import logging
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Annotated
 
 import typer
 
 from fiidb import config, dates, db, linking, seeds, sheets, watchlist
 from fiidb import http as fhttp
-from fiidb.sources import b3_cotahist, b3_funds, cvm_fii, fnet
+from fiidb.sources import b3_cotahist, b3_funds, cvm_fi, cvm_fii, fnet
 
 log = logging.getLogger("fiidb")
 
 app = typer.Typer(no_args_is_help=True, help="fiidb ingestion pipeline")
-watch_app = typer.Typer(no_args_is_help=True, help="Funds whose FundosNET distributions are ingested")
+watch_app = typer.Typer(no_args_is_help=True, help="Funds whose distributions are ingested (FII and FI-Infra)")
 app.add_typer(watch_app, name="watch")
 
 # Enough FundosNET history for DY 12m, with margin for notices delivered before the data-com.
@@ -52,6 +53,11 @@ def catch_up() -> None:
         except Exception:
             log.exception("b3_cotahist failed")
             failed.append("b3_cotahist")
+        try:
+            cvm_fi.catch_up(conn, http)
+        except Exception:
+            log.exception("cvm_fi failed")
+            failed.append("cvm_fi")
         failed += _fnet_latest(conn)
         _relink(conn)
         _load_seeds(conn, settings)
@@ -86,16 +92,23 @@ def _relink(conn) -> None:
     log.info("tickers linked to funds: %s", links)
 
 
-def _corporate_actions(conn, tickers: list[str]) -> list[str]:
-    """Refresh B3 splits/groupings for the given tickers and warn about unexplained price jumps."""
-    failed = []
+def _b3_funds(conn, entries: list[watchlist.Entry]) -> tuple[list[str], dict[str, b3_funds.Page]]:
+    """Refresh B3 splits/groupings of the given watchlist funds, plus the cash distributions of
+    FI-Infra funds, and warn about unexplained price jumps. Returns what failed and the pages."""
+    failed, pages = [], {}
     with fhttp.client(timeout=b3_funds.TIMEOUT) as http:
-        for ticker in tickers:
+        for entry in entries:
             try:
-                b3_funds.ingest(conn, http, ticker)
+                pages[entry.ticker] = b3_funds.ingest(
+                    conn, http, entry.ticker, cash_cnpj=entry.cnpj if entry.is_infra else None
+                )
             except Exception:
-                log.exception("b3_funds %s failed", ticker)
-                failed.append(f"b3_funds {ticker}")
+                log.exception("b3_funds %s failed", entry.ticker)
+                failed.append(f"b3_funds {entry.ticker}")
+                continue
+            if entry.is_infra:  # the page covers the last ~12 months of distributions
+                watchlist.mark_history(conn, entry.ticker, b3_funds.window_start(dates.today()))
+    tickers = [e.ticker for e in entries]
     for ticker, prev_date, trade_date, prev_close, close in b3_funds.unexplained_jumps(conn, tickers):
         log.warning(
             "%s: price %s -> %s between %s and %s with no split/grouping listed by B3; check it",
@@ -105,14 +118,17 @@ def _corporate_actions(conn, tickers: list[str]) -> list[str]:
             prev_date,
             trade_date,
         )
-    return failed
+    return failed, pages
 
 
 def _fnet_latest(conn) -> list[str]:
-    """Latest notices and corporate actions for every watchlist fund. Returns what failed."""
-    failed = _corporate_actions(conn, [e.ticker for e in watchlist.entries(conn)])
+    """Latest notices and corporate actions for every watchlist fund (B3 distributions for FI-Infra).
+    Returns what failed."""
+    failed, _ = _b3_funds(conn, watchlist.entries(conn))
     with fhttp.client(timeout=fnet.TIMEOUT) as http:
         for entry in watchlist.entries(conn):
+            if entry.is_infra:  # FundosNET has no FI-Infra notices; see _b3_funds
+                continue
             if entry.cnpj is None:
                 log.warning("watchlist %s: no CNPJ (ticker no longer linked?); skipped", entry.ticker)
                 failed.append(f"fnet {entry.ticker}")
@@ -130,6 +146,11 @@ def _fnet_history(conn, entries: list[watchlist.Entry], since: date | None, *, f
     failed = []
     with fhttp.client(timeout=fnet.TIMEOUT) as http:
         for entry in entries:
+            if entry.is_infra:
+                log.info(
+                    "%s: FI-Infra distributions come from the B3 page (last ~12 months), not FundosNET", entry.ticker
+                )
+                continue
             try:
                 if fnet.ingest_history(conn, http, entry.cnpj, since, force=force):
                     watchlist.mark_history(conn, entry.ticker, since or watchlist.FULL_HISTORY)
@@ -153,7 +174,8 @@ def _fnet_history(conn, entries: list[watchlist.Entry], since: date | None, *, f
 
 @app.command("fnet-latest")
 def fnet_latest_cmd() -> None:
-    """Fetch the latest FundosNET notices and B3 corporate actions for every watchlist fund (run often)."""
+    """Fetch the latest FundosNET notices (FII), B3 distributions (FI-Infra) and B3 corporate actions
+    for every watchlist fund (run often)."""
     settings = config.load()
     with db.connect(settings.database_url) as conn:
         failed = _fnet_latest(conn)
@@ -187,7 +209,9 @@ def fnet_history_cmd(
 @watch_app.command("add")
 def watch_add(
     tickers: list[str],
-    cnpj: str | None = typer.Option(None, help="Fund CNPJ, for a ticker not linked to a CVM fund (one ticker only)"),
+    cnpj: str | None = typer.Option(
+        None, help="Fund CNPJ, for a ticker not linked to a CVM fund, e.g. a FI-Infra (one ticker only)"
+    ),
     history: bool = typer.Option(
         True, help=f"Load the last {DEFAULT_HISTORY_DAYS} days of notices (needed for DY 12m)"
     ),
@@ -200,14 +224,21 @@ def watch_add(
         added = []
         for ticker in tickers:
             try:
-                entry = watchlist.add(conn, ticker, _cnpj_digits(cnpj) if cnpj else None)
+                if cnpj and _is_infra_candidate(conn, ticker.strip().upper(), _cnpj_digits(cnpj)):
+                    entry = _add_infra(conn, ticker.strip().upper(), _cnpj_digits(cnpj))
+                else:
+                    entry = watchlist.add(conn, ticker, _cnpj_digits(cnpj) if cnpj else None)
             except ValueError as exc:
                 typer.echo(str(exc), err=True)
                 continue
             typer.echo(f"added {entry.ticker} ({entry.cnpj} {entry.name or ''})")
             added.append(entry)
         if added:
-            _corporate_actions(conn, [e.ticker for e in added])
+            _relink(conn)
+            _, pages = _b3_funds(conn, added)
+            for entry in added:
+                if entry.is_infra and entry.ticker in pages:
+                    _check_infra_shares(conn, entry, pages[entry.ticker].shares)
         if history and added:
             failed = _fnet_history(conn, added, dates.today() - timedelta(days=DEFAULT_HISTORY_DAYS))
             _relink(conn)
@@ -215,6 +246,57 @@ def watch_add(
                 typer.echo(f"history incomplete, retry with `fiidb fnet-history`: {', '.join(failed)}", err=True)
     if len(added) < len(tickers):
         raise typer.Exit(1)
+
+
+def _is_infra_candidate(conn, ticker: str, cnpj: str) -> bool:
+    """A BDI 14 ticker whose CNPJ is not a FII known from the CVM monthly report."""
+    security = conn.execute("select bdi_code from security where ticker = %s", (ticker,)).fetchone()
+    fund = conn.execute("select type from fund where cnpj = %s", (cnpj,)).fetchone()
+    if fund is not None and fund[0] == "FII":
+        return False
+    if security is None:
+        raise ValueError(f"{ticker}: not in COTAHIST; run `fiidb catch-up` first")
+    return security[0] == "14"
+
+
+def _add_infra(conn, ticker: str, cnpj: str) -> watchlist.Entry:
+    """Create the FI-Infra fund from the CVM registry, load its recent daily reports and add it."""
+    with fhttp.client() as http:
+        classes = cvm_fi.ingest_registry(conn, http, {cnpj}, force=True)
+        found = classes.get(cnpj)
+        if found is None:
+            raise ValueError(f"{ticker}: CNPJ {cnpj} not found in the CVM fund registry")
+        if not found.looks_like_infra():
+            log.warning("%s: %s does not look like a FI-Infra (%s); check the CNPJ", ticker, found.name, cnpj)
+        if found.status and found.status.startswith("Cancelad"):
+            log.warning("%s: CVM registry says %r for %s", ticker, found.status, cnpj)
+        watchlist.add(conn, ticker, cnpj)
+        ids = {cnpj: cvm_fi.funds(conn)[cnpj]}
+        for month in cvm_fi.recent_months():
+            cvm_fi.ingest_daily(conn, http, month, ids, force=True)
+    return watchlist.entries(conn, [ticker])[0]
+
+
+# Shares from B3 x NAV per share from CVM must give the net assets when the CNPJ is right.
+SHARES_TOLERANCE = Decimal("0.02")
+
+
+def _check_infra_shares(conn, entry: watchlist.Entry, shares: Decimal | None) -> None:
+    (fund_id,) = conn.execute("select id from fund where cnpj = %s", (entry.cnpj,)).fetchone()
+    ratio = cvm_fi.shares_ratio(conn, fund_id, shares) if shares else None
+    if ratio is None:
+        log.warning("%s: could not check the CNPJ (no B3 share count or CVM daily report)", entry.ticker)
+    elif abs(ratio - 1) > SHARES_TOLERANCE:
+        log.warning(
+            "%s: B3 shares x CVM NAV per share = %.1f%% of the net assets of %s; wrong CNPJ? "
+            "fix with `fiidb watch add %s --cnpj ...`",
+            entry.ticker,
+            ratio * 100,
+            entry.cnpj,
+            entry.ticker,
+        )
+    else:
+        log.info("%s: CNPJ %s checked (B3 shares x NAV = %.2f%% of net assets)", entry.ticker, entry.cnpj, ratio * 100)
 
 
 def _cnpj_digits(cnpj: str) -> str:
@@ -303,7 +385,7 @@ def status() -> None:
     """Show row counts and the latest runs."""
     settings = config.load()
     with db.connect(settings.database_url) as conn:
-        for table in ("fund", "monthly_report", "security", "quote_daily", "distribution", "watchlist"):
+        for table in ("fund", "monthly_report", "daily_report", "security", "quote_daily", "distribution", "watchlist"):
             (count,) = conn.execute(f"select count(*) from {table}").fetchone()
             typer.echo(f"{table:16} {count:>10}")
         typer.echo("")

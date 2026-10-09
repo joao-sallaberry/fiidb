@@ -2,7 +2,8 @@
 
 Layout: https://www.b3.com.br/data/files/33/67/B9/50/D84057102C784E47AC094EA8/SeriesHistoricas_Layout.pdf
 Files: COTAHIST_A{yyyy}.ZIP (year), COTAHIST_D{ddmmyyyy}.ZIP (day, published in the evening).
-FIIs trade under BDI code 12; Fiagro/FI-Infra share BDI 14 with ETFs and FIPs.
+FIIs trade under BDI code 12; FI-Infra and Fiagro share BDI 14 with ETFs, FIPs and FIDCs. Both are
+loaded; which BDI 14 tickers are FI-Infra comes from the watchlist (`fiidb watch add --cnpj`).
 """
 
 import io
@@ -23,7 +24,7 @@ log = logging.getLogger(__name__)
 
 SOURCE = "b3_cotahist"
 BASE_URL = "https://bvmf.bmfbovespa.com.br/InstDados/SerHist/"
-BDI_CODES = {"12"}  # FII only for now
+BDI_CODES = {"12", "14"}
 MARKET_SPOT = "010"
 
 
@@ -155,6 +156,14 @@ def catch_up(
     """Closed years come from yearly files (once); the current year from the yearly file on
     first run, then one daily file per missing weekday."""
     today = today or dates.today()
+    # Databases loaded when only BDI 12 was kept: reload every year once (cached) to add BDI 14.
+    (has_quotes, has_bdi14) = conn.execute(
+        "select exists (select 1 from security), exists (select 1 from security where bdi_code = '14')"
+    ).fetchone()
+    if has_quotes and not has_bdi14:
+        log.info("%s: reloading all years to add BDI 14 (FI-Infra, Fiagro, ETFs)", SOURCE)
+        for year in range(start_year, today.year + 1):
+            ingest_year(conn, http, year, cache_dir=cache_dir)
     for year in range(start_year, today.year):
         previous = db.last_run(conn, SOURCE, f"A{year}")
         if previous is None or previous[0] != "ok":

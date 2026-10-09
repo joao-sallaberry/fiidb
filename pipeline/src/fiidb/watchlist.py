@@ -1,4 +1,5 @@
-"""Funds whose FundosNET notices are ingested (`fiidb watch ...`)."""
+"""Funds whose distributions are ingested (`fiidb watch ...`): FundosNET for FIIs, the B3
+listed-fund page for FI-Infra."""
 
 from dataclasses import dataclass
 from datetime import date
@@ -14,12 +15,17 @@ class Entry:
     cnpj: str | None  # explicit override, else the linked fund's CNPJ
     name: str | None
     history_since: date | None
+    fund_type: str | None  # FII | FIINFRA; None when the CNPJ is not in `fund` yet
+
+    @property
+    def is_infra(self) -> bool:
+        return self.fund_type == "FIINFRA"
 
 
 def entries(conn: psycopg.Connection, tickers: list[str] | None = None) -> list[Entry]:
     rows = conn.execute(
         """
-        select w.ticker, coalesce(w.cnpj, linked.cnpj), f.name, w.history_since
+        select w.ticker, coalesce(w.cnpj, linked.cnpj), f.name, w.history_since, f.type
         from watchlist w
         left join security s on s.ticker = w.ticker
         left join fund linked on linked.id = s.fund_id

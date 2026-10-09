@@ -1,0 +1,48 @@
+{
+ "quotedPer": "06/07/2020",
+ "form": "Escritural",
+ "fund": "KINEA INFRAF",
+ "ifd": "ITAU CORRETORA ACOES",
+ "tradingLot": "1",
+ "quantity": "23.484.769",
+ "code": "KDIF",
+ "codeCVM": null,
+ "segment": "BOLSA",
+ "cashDividends": [
+  {
+   "assetIssued": "BRKDIFCTF003",
+   "paymentDate": "07/10/2026",
+   "rate": "1,00000000000",
+   "relatedTo": "SETEMBRO 2026/2026",
+   "approvedOn": "30/09/2026",
+   "isinCode": "BRKDIFCTF003",
+   "label": "RENDIMENTO",
+   "lastDatePrior": "30/09/2026",
+   "remarks": ""
+  },
+  {
+   "assetIssued": "BRKDIFCTF003",
+   "paymentDate": "08/09/2026",
+   "rate": "1,00000000000",
+   "relatedTo": "AGOSTO 2026/2026",
+   "approvedOn": "31/08/2026",
+   "isinCode": "BRKDIFCTF003",
+   "label": "RENDIMENTO",
+   "lastDatePrior": "31/08/2026",
+   "remarks": ""
+  },
+  {
+   "assetIssued": "BRKDIFR12M17",
+   "paymentDate": "06/03/2026",
+   "rate": "0,24000000000",
+   "relatedTo": "FEVEREIRO 2026/2026",
+   "approvedOn": "27/02/2026",
+   "isinCode": "BRKDIFR12M17",
+   "label": "RENDIMENTO",
+   "lastDatePrior": "27/02/2026",
+   "remarks": ""
+  }
+ ],
+ "stockDividends": [],
+ "subscriptions": []
+}

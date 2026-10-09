@@ -1,12 +1,15 @@
 # fiidb
 
-Armazena e serve dados de fundos imobiliários (FII) listados na B3, usando apenas fontes públicas gratuitas:
+Armazena e serve dados de fundos imobiliários (FII) e de fundos de infraestrutura (FI-Infra) listados na B3, usando
+apenas fontes públicas gratuitas:
 
 | Dado | Fonte |
 |---|---|
-| Cadastro e informe mensal (PL, VP/cota, cotistas, DY) | [CVM Dados Abertos](https://dados.cvm.gov.br/dataset/fii-doc-inf_mensal) |
+| FII: cadastro e informe mensal (PL, VP/cota, cotistas, DY) | [CVM Dados Abertos](https://dados.cvm.gov.br/dataset/fii-doc-inf_mensal) |
+| FI-Infra: cadastro e informe diário (PL, VP/cota, cotistas) | [CVM Dados Abertos](https://dados.cvm.gov.br/dataset/fi-doc-inf_diario) |
 | Cotações diárias | B3 COTAHIST |
-| Proventos (fundos da watchlist) | B3 FundosNET — "Aviso aos Cotistas – Estruturado" |
+| Proventos de FII (fundos da watchlist) | B3 FundosNET — "Aviso aos Cotistas – Estruturado" |
+| Proventos de FI-Infra (fundos da watchlist) | B3, página do fundo (últimos ~12 meses) |
 
 ## Rodando localmente
 
@@ -31,6 +34,13 @@ Proventos são buscados só para os fundos que você acompanha (o FundosNET é l
 uv run fiidb watch add HGLG11 KNRI11     # inclui e carrega ~13 meses de proventos
 uv run fiidb fnet-latest                 # avisos novos (rodar com frequência; também roda no catch-up)
 uv run fiidb fnet-history HGLG11         # histórico completo, quando quiser
+```
+
+FI-Infra entra na watchlist com o CNPJ (a B3 e a CVM não ligam ticker e CNPJ). O pipeline confere o CNPJ: cotas na
+B3 × VP/cota na CVM tem que dar o PL.
+
+```sh
+uv run fiidb watch add KDIF11 --cnpj 26.324.298/0001-89
 ```
 
 A view `fund_metrics` reúne, por ticker, preço, VP/cota, P/VP, último rendimento, DY 12m e liquidez. Proventos são

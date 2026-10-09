@@ -1,7 +1,7 @@
 # Ingestão de dados
 
 Como os dados chegam ao Postgres: fontes, tabelas, fluxo do `catch-up` e as armadilhas conhecidas de cada fonte.
-O escopo atual é **somente FII**; Fiagro e FI-Infra virão depois (a coluna `fund.type` já existe).
+O escopo atual é **FII** (todos) e **FI-Infra** (só os da watchlist); Fiagro virá depois (`fund.type`).
 
 ## Visão geral
 
@@ -9,11 +9,13 @@ O escopo atual é **somente FII**; Fiagro e FI-Infra virão depois (a coluna `fu
 flowchart LR
     subgraph CVM["CVM Dados Abertos"]
         IM["inf_mensal_fii_AAAA.zip<br/>geral · complemento · ativo_passivo"]
+        RG["registro_fundo_classe.zip<br/>cadastro de fundos e classes"]
+        ID["inf_diario_fi_AAAAMM.zip<br/>informe diário"]
     end
     subgraph B3
         CH["COTAHIST<br/>anual A / diário D"]
         FN["FundosNET<br/>Aviso aos Cotistas Estruturado (XML)"]
-        BF["Página do fundo<br/>stockDividends (JSON)"]
+        BF["Página do fundo<br/>stockDividends · cashDividends (JSON)"]
     end
     SEED["seeds/fund_overrides.csv"]
     CLI["fiidb watch add/remove"]
@@ -23,11 +25,16 @@ flowchart LR
     CH --> quote_daily
     CH --> security
     CLI --> watchlist
-    watchlist -- "CNPJs consultados" --> FN
+    watchlist -- "CNPJs de FII" --> FN
     FN --> fnet_document
     FN --> distribution
     watchlist -- "tickers" --> BF
     BF --> corporate_action
+    BF -- "só FI-Infra" --> distribution
+    watchlist -- "CNPJs de FI-Infra" --> RG
+    RG --> fund
+    watchlist -- "CNPJs de FI-Infra" --> ID
+    ID --> daily_report
     SEED --> fund_override
 
     security -- "fund_id (vínculo)" --> fund
@@ -36,6 +43,7 @@ flowchart LR
     security --> fund_profile
     fund_override --> fund_profile
     fund_profile --> fund_metrics(["fund_metrics (view)"])
+    daily_report --> fund_metrics
     quote_daily --> fund_metrics
     distribution --> distribution_adjusted(["distribution_adjusted (view)"])
     corporate_action --> distribution_adjusted
@@ -47,11 +55,12 @@ flowchart LR
 
 | Tabela | Fonte | Conteúdo | Chave |
 |---|---|---|---|
-| `fund` | CVM, CSV `geral` | Cadastro: CNPJ, nome, ISIN informado, segmento declarado, administrador | `cnpj` |
+| `fund` | CVM, CSV `geral` (FII); cadastro `registro_classe` (FI-Infra da watchlist) | Cadastro: CNPJ, tipo, nome, ISIN informado, segmento declarado, administrador | `cnpj` |
 | `monthly_report` | CVM, CSVs `complemento` + `ativo_passivo` | PL, VP/cota, cotistas, rentabilidade, DY do mês; composição do ativo em `raw` | `(fund_id, ref_month)` |
-| `security` | B3 COTAHIST + vínculo calculado | Tickers negociados, ISIN, período de negociação, `fund_id` | `ticker` |
+| `daily_report` | CVM informe diário, só FI-Infra da watchlist | VP/cota, PL, valor da carteira, cotistas por dia | `(fund_id, ref_date)` |
+| `security` | B3 COTAHIST (BDI 12 e 14) + vínculo calculado | Tickers negociados, ISIN, BDI, período de negociação, `fund_id` | `ticker` |
 | `quote_daily` | B3 COTAHIST | OHLC, volume, nº de negócios por pregão (sem ajuste) | `(ticker, trade_date)` |
-| `distribution` | B3 FundosNET, só fundos da `watchlist` | Rendimentos e amortizações: data-com, pagamento, valor por cota | `(fnet_document_id, isin, kind)` |
+| `distribution` | FII: B3 FundosNET (`source = 'fnet'`); FI-Infra: página do fundo na B3, `cashDividends` (`source = 'b3'`). Só fundos da `watchlist` | Rendimentos e amortizações: data-com, pagamento, valor por cota | `fnet`: `(fnet_document_id, isin, kind)`; `b3`: `(isin, kind, base_date)` |
 | `fnet_document` | B3 FundosNET (busca) | Avisos já processados: versão, situação (ativo/cancelado/inativo), erro | `id` |
 | `watchlist` | você, via `fiidb watch` (fora do git) | Fundos cujos proventos são buscados; até quando o histórico está completo | `ticker` |
 | `corporate_action` | B3, página do fundo (`stockDividends`), só watchlist | Desdobramentos, grupamentos e bonificações: data-com, fator | `(isin, last_date_prior, kind)` |
@@ -61,6 +70,9 @@ flowchart LR
 | `fund_profile` (view) | calculada | Categoria e segmento de cada fundo | — |
 | `distribution_adjusted` (view) | calculada | Proventos ativos, sem duplicatas, com valor por cota de hoje (ajustado por desdobramentos) | — |
 | `fund_metrics` (view) | calculada | Uma linha por ticker: preço, VP/cota, P/VP, último rendimento, DY 12m, liquidez | — |
+
+`watchlist` guarda fundos a acompanhar; para um FI-Infra, o `cnpj` informado é o que cria o fundo (ver
+[FI-Infra](#fi-infra)).
 
 Descrições por coluna ficam no próprio banco (`\d+ <tabela>` no psql).
 
@@ -73,7 +85,9 @@ Descrições por coluna ficam no próprio banco (`\d+ <tabela>` no psql).
 | COTAHIST diário | `https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_D{DDMMAAAA}.ZIP` (~400 KB) | Publicado à noite (~20h30) |
 | FundosNET busca | `https://fnet.bmfbovespa.com.br/fnet/publico/pesquisarGerenciadorDocumentosDados` (`idCategoriaDocumento=14`, `idTipoDocumento=41`, `tipoFundo=1`) | Contínua |
 | FundosNET documento | `https://fnet.bmfbovespa.com.br/fnet/publico/downloadDocumento?id={id}` | — |
-| B3 página do fundo | `https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/GetListedSupplementFunds/{base64 de {"cnpj":"0","identifierFund":"HGLG","typeFund":7}}` | Contínua |
+| B3 página do fundo | `https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/GetListedSupplementFunds/{base64 de {"cnpj":"0","identifierFund":"HGLG","typeFund":7}}` (serve também para FI-Infra) | Contínua |
+| CVM cadastro de fundos | `https://dados.cvm.gov.br/dados/FI/CAD/DADOS/registro_fundo_classe.zip` (~7 MB) | Diária |
+| CVM informe diário | `https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{AAAAMM}.zip` (~11 MB, todos os fundos do país) | Diária; o mês corrente e o anterior são republicados |
 
 Os endpoints do FundosNET e da página do fundo na B3 não são APIs oficiais e podem mudar.
 
@@ -87,14 +101,17 @@ Os endpoints do FundosNET e da página do fundo na B3 não são APIs oficiais e 
    - anos fechados: arquivo anual, uma única vez (cacheado em `FIIDB_CACHE_DIR`, padrão `~/.cache/fiidb`);
    - ano corrente: arquivo anual na primeira vez, depois um arquivo diário por dia útil desde a última cotação.
      404 = feriado ou ainda não publicado (é tentado de novo na próxima execução).
-3. **FundosNET**: o mesmo que `fiidb fnet-latest` (abaixo).
-4. **Vínculo ticker → fundo** (`fiidb/linking.py`), detalhado abaixo.
-5. **Seeds**: substitui `fund_override` e os eventos manuais de `corporate_action` pelo conteúdo dos CSVs.
+   - Se o banco ainda não tem nenhum ticker BDI 14 (carregado antes do FI-Infra), recarrega todos os anos uma vez.
+3. **FI-Infra** (só se houver algum na watchlist): cadastro da CVM e informe diário do mês corrente e do anterior,
+   cada arquivo só quando o sha256 mudou.
+4. **FundosNET**: o mesmo que `fiidb fnet-latest` (abaixo), incluindo os proventos de FI-Infra pela página da B3.
+5. **Vínculo ticker → fundo** (`fiidb/linking.py`), detalhado abaixo.
+6. **Seeds**: substitui `fund_override` e os eventos manuais de `corporate_action` pelo conteúdo dos CSVs.
 
 Cada arquivo é uma transação própria (conexão em autocommit + `conn.transaction()`). Falhas são registradas em
 `ingestion_run` com `status = 'error'`, os demais arquivos seguem, e o comando sai com código 1.
 
-Primeira carga: ~1 GB de download e alguns minutos. Execuções seguintes: segundos. Banco completo: ~200 MB.
+Primeira carga: ~1 GB de download e alguns minutos. Execuções seguintes: segundos. Banco completo: ~370 MB.
 
 ## Proventos (FundosNET)
 
@@ -118,6 +135,38 @@ Regras:
 - `distribution.fund_cnpj` é o CNPJ usado na busca (o da CVM), não o escrito no XML.
 - `watchlist.history_since` marca desde quando o histórico está completo (`1900-01-01` = tudo). Só é
   atualizado quando todas as páginas e documentos foram processados sem erro.
+- FI-Infra não passa pelo FundosNET (ver abaixo).
+
+## FI-Infra
+
+Fundos de debêntures incentivadas de infraestrutura (Lei 12.431) seguem as regras gerais de fundos (RCVM 175,
+anexo I), não as de FII: nada de informe mensal FII nem de avisos no FundosNET (a busca pelo CNPJ do KDIF11 não
+traz nada). As fontes são outras:
+
+| Dado | Fonte | Observação |
+|---|---|---|
+| Preço | COTAHIST, BDI 14 | Junto com ETFs, FIPs, FIDCs e Fiagro (~300 tickers). Todos são carregados em `security`/`quote_daily`; só os vinculados a um fundo aparecem com dados |
+| Cadastro | CVM `registro_fundo_classe.zip` | `registro_classe.csv` (o CNPJ negociado é o da classe), `registro_fundo.csv` (administrador, pelo `ID_Registro_Fundo`). Um CNPJ pode ter registros cancelados: vale o ativo. **Sem ISIN** |
+| VP/cota, PL, cotistas | CVM `inf_diario_fi_AAAAMM.zip` | Diário. Linhas de subclasse são ignoradas (classes listadas não têm). Só os CNPJs de FI-Infra do banco são guardados |
+| Proventos | Página do fundo na B3, `cashDividends` | Janela móvel de ~12 meses (em out/2026, a partir de out/2025, em todos os fundos consultados). Rótulos `RENDIMENTO` e `AMORTIZACAO RF`; recibos de subscrição vêm com o próprio ISIN |
+
+**Vínculo**: nem a B3 (`codeCVM` nulo) nem a CVM (sem ISIN) ligam ticker e CNPJ, e o nome do pregão não ajuda
+(CPTI11 é "FIC IE CAP"). O CNPJ vem de `fiidb watch add KDIF11 --cnpj 26.324.298/0001-89` (o CNPJ aparece na
+página do fundo no site da B3 e no regulamento) e é **conferido**: `quantity` da página da B3 × VP/cota do último
+informe diário tem que dar o PL (tolerância de 2%; KDIF11: 23.484.769 × 117,998 = 100,00% do PL). Se não bater, o
+comando avisa. Um `--cnpj` é tratado como FI-Infra quando o ticker é BDI 14 e o CNPJ não é de um FII conhecido.
+
+Ao adicionar: cria o `fund` (`type = 'FIINFRA'`) a partir do cadastro, carrega o informe diário do mês corrente e
+do anterior, vincula o ticker (`link_method = 'watchlist'`) e busca proventos e desdobramentos na B3.
+
+**Proventos**: gravados com `source = 'b3'` em `distribution`, chave `(isin, kind, base_date)`. Eventos que saem da
+janela continuam no banco, então o histórico cresce a partir da primeira consulta. Depois de cada consulta bem
+sucedida, `history_since` vira hoje − 12 meses, o que habilita o DY 12m. Um provento que a B3 corrija muda no
+upsert; um que ela apague não é apagado aqui. Para FII a página não é usada para proventos: o FundosNET tem o
+histórico completo.
+
+**VP diário**: oscila bem mais que o de FII (marcação a mercado das debêntures; o KDIF11 foi de 116,96 a 122,60 em
+uma semana de outubro/2026 com o mesmo número de cotas). `fund_metrics.report_month` é a data do informe diário.
 
 ## Desdobramentos e grupamentos
 
@@ -152,7 +201,7 @@ View com uma linha por ticker, para a planilha e a futura API.
 | Coluna | Definição |
 |---|---|
 | `price`, `price_date` | Último fechamento (sem ajuste) |
-| `nav_per_share`, `net_assets`, `shareholders`, `report_month` | Último informe da CVM com VP/cota |
+| `nav_per_share`, `net_assets`, `shareholders`, `report_month` | Último informe da CVM com VP/cota: mensal para FII (`report_month` = 1º dia do mês), diário para FI-Infra (`report_month` = o dia) |
 | `price_to_nav` | P/VP = `price / nav_per_share` |
 | `last_income*` | Último rendimento (valor, data-com, pagamento), por cota de hoje. Amortizações não entram |
 | `income_12m`, `dividend_yield_12m` | Soma dos rendimentos com data-com nos últimos 12 meses (ajustados por desdobramentos), e essa soma / `price`. **Só preenchido** para fundos da watchlist com `history_since` ≥ 12 meses atrás; senão NULL (não zero) |
@@ -197,8 +246,9 @@ vazio, com erro de digitação ou de recibo de subscrição (`...R01M...`). Os m
 | `link_method` | Regra |
 |---|---|
 | `fnet` | ISIN de um provento do FundosNET, buscado pelo CNPJ do fundo (só fundos da watchlist) |
-| `isin` | ISIN do COTAHIST = ISIN informado à CVM, se só um fundo o informa |
-| `isin_issuer` | Mesmo código de emissor (caracteres 3–6 do ISIN, ex. `BR`**`HGLG`**`CTF004`) e só um fundo com ele |
+| `watchlist` | CNPJ informado em `fiidb watch add --cnpj` (FI-Infra: conferido com cotas × VP) |
+| `isin` | ISIN do COTAHIST = ISIN informado à CVM, se só um fundo o informa (só BDI 12) |
+| `isin_issuer` | Mesmo código de emissor (caracteres 3–6 do ISIN, ex. `BR`**`HGLG`**`CTF004`) e só um FII com ele (só BDI 12) |
 
 Fundos *feeder* costumam informar o ISIN do fundo principal (o `BRSPTWCTF002` aparece em 7 fundos). Um ISIN
 ambíguo não vincula nada, e vínculos `isin` que ficaram ambíguos são desfeitos (`isin_stale`). Desempatar pelo
@@ -210,7 +260,7 @@ Para descobrir o CNPJ de um ticker sem vínculo: os avisos recentes do FundosNET
 ticker no XML antes de usar o CNPJ. Ao carregar o histórico, o pipeline avisa se os avisos de um CNPJ citam outros
 tickers e não o da watchlist (sinal de CNPJ errado).
 
-Hoje ~44 tickers negociados ficam sem fundo. Para um deles entrar na watchlist, use
+Hoje ~37 tickers de FII negociados nos últimos 30 dias ficam sem fundo. Para um deles entrar na watchlist, use
 `fiidb watch add TICKER --cnpj <cnpj>`; o vínculo `fnet` passa a valer depois da primeira carga.
 
 ## Classificação (`fund_profile`)
@@ -227,7 +277,8 @@ liquidez):
 | nenhuma das anteriores | Híbrido |
 
 O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é específico (não "Multicategoria",
-"Outros" ou "Títulos e Val. Mob."). `seeds/fund_overrides.csv` prevalece sobre tudo.
+"Outros" ou "Títulos e Val. Mob."). Fundos com `type = 'FIINFRA'` têm categoria `FI-Infra`, sem segmento.
+`seeds/fund_overrides.csv` prevalece sobre tudo.
 
 ## Armadilhas conhecidas das fontes
 
@@ -238,7 +289,10 @@ O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é
 | CVM | ~1% dos informes com proporções absurdas (rentabilidade de 10 bilhões no mês) | `\|ratio\| > 1` vira NULL; original fica em `raw`; colunas `numeric` sem limite |
 | CVM | Segmento declarado grosseiro (maioria "Multicategoria") | Classificação própria + overrides |
 | CVM | ISIN vazio ou errado | Vínculo em camadas |
-| B3 | FIIs no BDI 12, mas Fiagro/FI-Infra no BDI 14 junto com ETFs e FIPs | Hoje só BDI 12; o tipo virá da CVM, não da B3 |
+| B3 | FIIs no BDI 12, mas Fiagro/FI-Infra no BDI 14 junto com ETFs, FIPs e FIDCs | Os dois são carregados; o tipo vem da watchlist/CVM, não da B3. Vínculo por ISIN só no BDI 12 |
+| CVM/B3 | FI-Infra sem ISIN na CVM e sem CNPJ na B3 | CNPJ informado na watchlist e conferido com cotas × VP |
+| FundosNET | Sem avisos de FI-Infra | Proventos de FI-Infra pela página do fundo na B3 |
+| B3 | `cashDividends` só traz ~12 meses | Linhas acumulam no banco; `history_since` = hoje − 12 meses |
 | B3 | Preços não ajustados por proventos/desdobramentos | Guardados como negociados; ajuste será calculado |
 | B3 | Arquivo diário só sai à noite | 404 é normal; tentado de novo no próximo `catch-up` |
 | FundosNET | Requisições travam ou voltam 5xx com frequência | Timeout de 15 s + 4 tentativas; falhas por fundo/documento não bloqueiam o resto |
@@ -252,6 +306,7 @@ O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é
 
 - `uv run pytest`: parsers, com fixtures reais em `pipeline/tests/fixtures/`.
 - Com `FIIDB_TEST_DATABASE_URL` apontando para um banco descartável, também os testes de carga
-  (`tests/test_load.py`, `tests/test_fnet_load.py`, `tests/test_corporate_actions.py`, `tests/test_sheets.py`;
+  (`tests/test_load.py`, `tests/test_fnet_load.py`, `tests/test_corporate_actions.py`, `tests/test_sheets.py`,
+  `tests/test_fiinfra.py`;
   fixtures em `tests/conftest.py`). Eles **apagam o schema
-  `public`** desse banco e aplicam `db/migrations`. O FundosNET é simulado com `httpx.MockTransport`.
+  `public`** desse banco e aplicam `db/migrations`. FundosNET, CVM e B3 são simulados com `httpx.MockTransport`.

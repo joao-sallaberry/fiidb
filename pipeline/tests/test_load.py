@@ -14,7 +14,7 @@ def test_loading_twice_is_idempotent(conn, load_fixtures):
     load_fixtures(conn)
     first = counts(conn)
     load_fixtures(conn)
-    assert counts(conn) == first == [2, 16, 1]
+    assert counts(conn) == first == [2, 16, 3]  # HGLG11 (BDI 12), JURO11 and KNCA11 (BDI 14)
 
 
 def test_older_report_version_does_not_overwrite_newer(conn, load_fixtures):
