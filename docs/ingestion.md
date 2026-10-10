@@ -76,6 +76,156 @@ flowchart LR
 
 Descrições por coluna ficam no próprio banco (`\d+ <tabela>` no psql).
 
+### Modelo de dados
+
+Linha cheia = foreign key no banco (só as três para `fund`); tracejada = junção lógica sem FK, proposital porque
+as fontes chegam fora de ordem (cotação antes do fundo, provento de um ISIN de recibo que não está em `security`).
+As views ficam de fora: dependências delas no diagrama de [Visão geral](#visão-geral). Atualize junto com as
+migrações.
+
+```mermaid
+erDiagram
+    fund {
+        bigint id PK
+        text cnpj UK
+        text type "FII | FIINFRA"
+        text name
+        text isin "informado à CVM"
+        text segment
+        text mandate
+        text management_type
+        text target_audience
+        text administrator_name
+        text administrator_cnpj
+        date started_at
+        boolean listed
+        date last_report_month
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    monthly_report {
+        bigint fund_id PK, FK
+        date ref_month PK
+        integer version
+        date delivered_at
+        numeric shares_outstanding
+        numeric total_assets
+        numeric net_assets
+        numeric nav_per_share
+        integer shareholders
+        numeric admin_fee_ratio
+        numeric return_effective_ratio
+        numeric return_nav_ratio
+        numeric dividend_yield_ratio
+        numeric amortization_ratio
+        jsonb raw "linha original da CVM"
+    }
+    daily_report {
+        bigint fund_id PK, FK
+        date ref_date PK
+        numeric nav_per_share
+        numeric net_assets
+        numeric total_value
+        integer shareholders
+    }
+    security {
+        text ticker PK
+        text isin
+        text bdi_code "12 FII | 14 FI-Infra etc."
+        text short_name
+        date first_trade_date
+        date last_trade_date
+        bigint fund_id FK
+        text link_method "fnet | watchlist | isin | isin_issuer"
+    }
+    quote_daily {
+        text ticker PK
+        date trade_date PK
+        text isin
+        numeric open
+        numeric high
+        numeric low
+        numeric avg
+        numeric close
+        integer trades
+        bigint quantity
+        numeric volume
+    }
+    watchlist {
+        text ticker PK
+        text cnpj "obrigatório p/ FI-Infra"
+        timestamptz added_at
+        date history_since
+    }
+    fnet_document {
+        bigint id PK
+        integer version
+        text fund_cnpj
+        text status "A | C | I"
+        timestamptz delivered_at
+        timestamptz fetched_at
+        text error
+    }
+    distribution {
+        bigint id PK
+        text source "fnet | b3"
+        bigint fnet_document_id "UK com isin, kind (fnet)"
+        text isin "UK com kind, base_date (b3)"
+        text ticker
+        text kind "income | amortization"
+        date base_date "data-com"
+        date payment_date
+        numeric amount_per_share
+        text reference_period
+        boolean tax_exempt
+        text fund_cnpj
+        timestamptz delivered_at
+        integer fnet_version
+    }
+    corporate_action {
+        text isin PK
+        date last_date_prior PK
+        text kind PK
+        text ticker
+        text factor_raw
+        numeric multiplier
+        date approved_on
+        timestamptz fetched_at
+        text source "b3 | manual"
+    }
+    fund_override {
+        text ticker PK
+        text category
+        text segment
+        text note
+    }
+    ingestion_run {
+        bigint id PK
+        text source
+        text period
+        text url
+        text sha256
+        integer rows
+        text status
+        text error
+        timestamptz started_at
+        timestamptz finished_at
+    }
+
+    fund ||--o{ monthly_report : "fund_id"
+    fund ||--o{ daily_report : "fund_id"
+    fund |o--o{ security : "fund_id"
+    security ||..o{ quote_daily : "ticker"
+    security ||..o| watchlist : "ticker"
+    security ||..o| fund_override : "ticker"
+    security }o..o{ corporate_action : "isin"
+    security }o..o{ distribution : "isin"
+    fund |o..o{ watchlist : "cnpj"
+    fund ||..o{ fnet_document : "cnpj = fund_cnpj"
+    fund ||..o{ distribution : "cnpj = fund_cnpj"
+    fnet_document |o..o{ distribution : "fnet_document_id"
+```
+
 ### URLs
 
 | Fonte | URL | Atualização |

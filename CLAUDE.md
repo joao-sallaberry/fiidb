@@ -21,7 +21,7 @@ Toda mudança que altere comportamento atualiza a documentação **na mesma alte
 | Mudou… | Atualize |
 |---|---|
 | fonte, tabela, regra de carga, vínculo, classificação, armadilha nova de dados | `docs/ingestion.md` |
-| tabela ou coluna | `comment on` na migração que a cria ou altera (`\d+` no psql mostra) |
+| tabela ou coluna | `comment on` na migração que a cria ou altera (`\d+` no psql mostra) e o diagrama "Modelo de dados" em `docs/ingestion.md` |
 | comando, variável de ambiente, convenção, estrutura de pastas, fase do plano | este arquivo |
 | forma de rodar o projeto | `README.md` |
 
