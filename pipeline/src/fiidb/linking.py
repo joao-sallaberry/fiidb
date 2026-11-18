@@ -5,6 +5,9 @@ receipt, so matching falls back from the strongest evidence to the weakest. Earl
 stronger links are never overwritten by weaker ones. ISIN matching applies to FIIs (BDI 12) and
 to Fiagro funds (BDI 14, shared with ETFs, FIPs and FIDCs, so the fund type is checked):
 FI-Infra funds have no ISIN at CVM and are linked by the CNPJ given in the watchlist.
+
+Links also decide which tickers are the same shares under a new code (view `ticker_change`), so
+the materialized `ticker_lineage` is refreshed after every linking.
 """
 
 import psycopg
@@ -76,4 +79,13 @@ STEPS = {
 
 
 def link_securities(conn: psycopg.Connection) -> dict[str, int]:
-    return {name: conn.execute(sql).rowcount for name, sql in STEPS.items()}
+    links = {name: conn.execute(sql).rowcount for name, sql in STEPS.items()}
+    refresh_lineage(conn)
+    return links
+
+
+def refresh_lineage(conn: psycopg.Connection) -> None:
+    """Recompute ticker_lineage from ticker_change; run after security or ticker_change_manual change.
+    Analyzed right away: the metrics views are planned from its statistics."""
+    conn.execute("refresh materialized view ticker_lineage")
+    conn.execute("analyze ticker_lineage")

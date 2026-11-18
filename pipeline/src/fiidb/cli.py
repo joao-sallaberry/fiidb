@@ -72,6 +72,7 @@ def catch_up() -> None:
         except Exception:
             log.exception("cvm_fi failed")
             failed.append("cvm_fi")
+        _relink(conn)  # new tickers and ticker changes before fetching the watchlist funds
         failed += _fnet_latest(conn)
         _relink(conn)
         _load_seeds(conn, settings)
@@ -95,15 +96,29 @@ def _publish_sheet(conn, settings: config.Settings) -> list[str]:
 
 
 def _load_seeds(conn, settings: config.Settings) -> None:
+    changes = seeds.load_ticker_changes(conn, settings.seeds_dir / "ticker_changes.csv")
+    log.info("manual ticker changes loaded: %d", changes)
     log.info("fund overrides loaded: %d", seeds.load_overrides(conn, settings.seeds_dir / "fund_overrides.csv"))
     actions = seeds.load_corporate_actions(conn, settings.seeds_dir / "corporate_actions.csv")
     log.info("manual corporate actions loaded: %d", actions)
+    _follow_ticker_changes(conn)
 
 
 def _relink(conn) -> None:
     with conn.transaction():
         links = linking.link_securities(conn)
     log.info("tickers linked to funds: %s", links)
+    _follow_ticker_changes(conn)
+
+
+def _follow_ticker_changes(conn) -> None:
+    for old, new in watchlist.follow_ticker_changes(conn):
+        log.warning(
+            "%s now trades as %s: watchlist updated; the sheet row is now %s (update lookups and GOOGLEFINANCE)",
+            old,
+            new,
+            new,
+        )
 
 
 def _b3_funds(conn, entries: list[watchlist.Entry]) -> tuple[list[str], dict[str, b3_funds.Page]]:
@@ -171,7 +186,7 @@ def _fnet_history(conn, entries: list[watchlist.Entry], since: date | None, *, f
                 else:
                     failed.append(entry.ticker)
                 named = watchlist.notice_tickers(conn, entry.cnpj)
-                if named and entry.ticker not in named:
+                if named and named.isdisjoint(watchlist.lineage(conn, entry.ticker)):
                     log.warning(
                         "%s: the notices of CNPJ %s name %s, not %s; wrong fund? fix with `fiidb watch add %s --cnpj ...`",
                         entry.ticker,
@@ -209,8 +224,9 @@ def fnet_history_cmd(
     """Load the FundosNET history of some watchlist funds (slow; run ad hoc)."""
     settings = config.load()
     with db.connect(settings.database_url) as conn:
-        entries = watchlist.entries(conn, [t.upper() for t in tickers])
-        missing = {t.upper() for t in tickers} - {e.ticker for e in entries}
+        tickers = [watchlist.current_ticker(conn, t.strip().upper()) for t in tickers]
+        entries = watchlist.entries(conn, tickers)
+        missing = set(tickers) - {e.ticker for e in entries}
         if missing:
             raise typer.BadParameter(f"not in the watchlist: {', '.join(sorted(missing))}")
         failed = _fnet_history(conn, entries, date.fromisoformat(since) if since else None, force=force)
@@ -284,11 +300,11 @@ def _add_infra(conn, ticker: str, cnpj: str) -> watchlist.Entry:
             log.warning("%s: %s does not look like a FI-Infra (%s); check the CNPJ", ticker, found.name, cnpj)
         if found.status and found.status.startswith("Cancelad"):
             log.warning("%s: CVM registry says %r for %s", ticker, found.status, cnpj)
-        watchlist.add(conn, ticker, cnpj)
+        entry = watchlist.add(conn, ticker, cnpj)
         ids = {cnpj: cvm_fi.funds(conn)[cnpj]}
         for month in cvm_fi.recent_months():
             cvm_fi.ingest_daily(conn, http, month, ids, force=True)
-    return watchlist.entries(conn, [ticker])[0]
+    return watchlist.entries(conn, [entry.ticker])[0]
 
 
 # Shares from B3 x NAV per share from CVM must give the net assets when the CNPJ is right.
@@ -326,7 +342,8 @@ def watch_remove(tickers: list[str]) -> None:
     settings = config.load()
     with db.connect(settings.database_url) as conn:
         for ticker in tickers:
-            typer.echo(f"{ticker.upper()}: {'removed' if watchlist.remove(conn, ticker) else 'not in the watchlist'}")
+            ticker = watchlist.current_ticker(conn, ticker.strip().upper())
+            typer.echo(f"{ticker}: {'removed' if watchlist.remove(conn, ticker) else 'not in the watchlist'}")
 
 
 @watch_app.command("list")

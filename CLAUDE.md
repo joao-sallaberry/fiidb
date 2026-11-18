@@ -36,6 +36,7 @@ docs/ingestion.md       arquitetura da ingestão
 seeds/                  dados manuais, recarregados a cada catch-up e por `fiidb seed`:
   fund_overrides.csv    categoria/segmento por ticker
   corporate_actions.csv desdobramentos que a B3 não lista e alertas de preço revisados (REVIEWED, ×1)
+  ticker_changes.csv    trocas de ticker que a detecção automática não pega (old_ticker,new_ticker,note)
 pipeline/               projeto Python (uv), pacote `fiidb`
   src/fiidb/
     cli.py              comandos Typer (`fiidb ...`)
@@ -43,7 +44,7 @@ pipeline/               projeto Python (uv), pacote `fiidb`
     db.py               connect (autocommit), upsert via COPY + staging, ingestion_run
     http.py             httpx com retry e cache em disco para arquivos imutáveis
     dates.py            today()/now() no fuso de São Paulo, parse_date
-    linking.py          vínculo ticker (security) → fundo (fund)
+    linking.py          vínculo ticker (security) → fundo (fund); refresh de ticker_lineage
     seeds.py            carga de seeds/
     watchlist.py        fundos cujos proventos são buscados (FundosNET para FII e Fiagro, página da B3 para FI-Infra)
     sheets.py           escreve a aba `fiidb` da planilha (Google Sheets API, service account)
@@ -51,7 +52,8 @@ pipeline/               projeto Python (uv), pacote `fiidb`
                         diário, FI-Infra), b3_cotahist, fnet, b3_funds (desdobramentos; proventos de FI-Infra)
   tests/                conftest.py (banco de teste), test_parsers.py (sem banco), test_load.py,
                         test_fnet_load.py, test_corporate_actions.py, test_sheets.py, test_fiinfra.py,
-                        test_fiagro.py (APIs simuladas com httpx.MockTransport), fixtures/ (amostras reais)
+                        test_fiagro.py, test_ticker_change.py (APIs simuladas com httpx.MockTransport),
+                        fixtures/ (amostras reais)
 docker-compose.yml      postgres + migrate (dbmate, profile "tools")
 ```
 
@@ -127,6 +129,11 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
   ao criar métricas novas sobre séries por cota (preço, VP), ajuste também ou deixe claro que não está ajustado.
   A B3 nem sempre lista eventos antigos: o alerta de salto de preço aponta os casos; registre-os em
   `seeds/corporate_actions.csv` só com evidência (preço + cotas na CVM) na nota.
+- **Troca de ticker:** um fundo pode mudar de código e de ISIN (NAVT11 → VTOT11). Métrica nova por ticker ou ISIN
+  deve seguir `ticker_lineage` (o código atual com os anteriores), não só `security.ticker`/`isin`. A
+  `ticker_lineage` é *materialized view*: após mudar `security` ou `ticker_change_manual`, chame
+  `linking.refresh_lineage` (o `link_securities` e a carga das seeds já chamam). A watchlist é renomeada
+  para o código novo a cada vínculo.
 - **Planilha:** colunas da aba `fiidb` são referenciadas por nome nas fórmulas do autor; só acrescente no fim
   (`sheets.LATE_COLUMNS`, depois de `atualizado_em`).
 - **Escopo:** FII (BDI 12, todos), Fiagro (BDI 14, todos, `fund.type = 'FIAGRO'`) e FI-Infra (BDI 14, só os da

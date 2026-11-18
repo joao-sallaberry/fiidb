@@ -219,13 +219,21 @@ def ingest(conn: psycopg.Connection, http: httpx.Client, ticker: str, *, cash_cn
     return page
 
 
+# One series per current ticker, earlier codes included: a split on the day the code changed is
+# only visible across the seam (the event may be listed under either ISIN).
 UNEXPLAINED_JUMPS = """
-    with q as (
+    with series as (
+        select coalesce(l.ticker, qd.ticker) as ticker, qd.isin, qd.trade_date, qd.close
+        from quote_daily qd
+        left join ticker_lineage l on l.member_ticker = qd.ticker
+        where coalesce(l.ticker, qd.ticker) = any(%(tickers)s)
+    ),
+    q as (
         select ticker, isin, trade_date, close,
+            lag(isin) over (partition by ticker order by trade_date) as prev_isin,
             lag(close) over (partition by ticker order by trade_date) as prev_close,
             lag(trade_date) over (partition by ticker order by trade_date) as prev_date
-        from quote_daily
-        where ticker = any(%(tickers)s)
+        from series
     )
     select ticker, prev_date, trade_date, prev_close, close
     from q
@@ -233,7 +241,8 @@ UNEXPLAINED_JUMPS = """
         and (prev_close / close >= 1.8 or prev_close / close <= 0.55)
         and not exists (
             select 1 from corporate_action c
-            where c.isin = q.isin and c.last_date_prior >= q.prev_date and c.last_date_prior < q.trade_date
+            where c.isin in (q.isin, q.prev_isin)
+                and c.last_date_prior >= q.prev_date and c.last_date_prior < q.trade_date
         )
     order by ticker, trade_date
 """

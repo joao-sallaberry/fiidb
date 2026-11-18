@@ -46,7 +46,7 @@ def test_build_rows_only_watchlist(conn, load_fixtures):
     (header,) = sheets.build_rows(conn)  # empty watchlist
     # Columns added later come after `atualizado_em`, so no existing column changes position.
     assert header[:15] == [h for h, _ in sheets.COLUMNS] + ["atualizado_em"]
-    assert header[15:] == ["patrimonio_liquido"]
+    assert header[15:] == ["patrimonio_liquido", "tickers_anteriores"]
 
     watchlist.add(conn, "HGLG11")
     watchlist.mark_history(conn, "HGLG11", dates.today() - timedelta(days=400))

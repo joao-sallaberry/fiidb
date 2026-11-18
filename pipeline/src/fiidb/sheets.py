@@ -45,6 +45,7 @@ COLUMNS = [
 # Added after `atualizado_em` already was the last column, so they come after it: no column moves.
 LATE_COLUMNS = [
     ("patrimonio_liquido", "net_assets"),
+    ("tickers_anteriores", "previous_tickers"),
 ]
 
 

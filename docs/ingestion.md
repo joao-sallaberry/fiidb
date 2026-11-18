@@ -19,6 +19,7 @@ flowchart LR
         BF["Página do fundo<br/>stockDividends · cashDividends (JSON)"]
     end
     SEED["seeds/fund_overrides.csv"]
+    SEED2["seeds/ticker_changes.csv"]
     CLI["fiidb watch add/remove"]
 
     IM --> fund
@@ -39,6 +40,7 @@ flowchart LR
     watchlist -- "CNPJs de FI-Infra" --> ID
     ID --> daily_report
     SEED --> fund_override
+    SEED2 --> ticker_change_manual
 
     security -- "fund_id (vínculo)" --> fund
     monthly_report --> fund_profile(["fund_profile (view)"])
@@ -51,6 +53,11 @@ flowchart LR
     distribution --> distribution_adjusted(["distribution_adjusted (view)"])
     corporate_action --> distribution_adjusted
     distribution_adjusted --> fund_metrics
+    security --> ticker_change(["ticker_change (view)"])
+    ticker_change_manual --> ticker_change
+    ticker_change --> ticker_lineage(["ticker_lineage (materialized view)"])
+    ticker_lineage --> distribution_adjusted
+    ticker_lineage --> fund_metrics
     fund_metrics -- "fiidb sheets" --> SHEET["Google Sheets<br/>aba fiidb"]
 ```
 
@@ -69,10 +76,13 @@ flowchart LR
 | `corporate_action` | B3, página do fundo (`stockDividends`), só watchlist | Desdobramentos, grupamentos e bonificações: data-com, fator | `(isin, last_date_prior, kind)` |
 | `fund_override` | `seeds/fund_overrides.csv` (manual) | Correções de categoria/segmento por ticker | `ticker` |
 | `corporate_action` (`source = 'manual'`) | `seeds/corporate_actions.csv` (manual) | Eventos que a B3 não lista e alertas revisados | `(isin, last_date_prior, kind)` |
+| `ticker_change_manual` | `seeds/ticker_changes.csv` (manual) | Trocas de ticker que a detecção automática não pega | `old_ticker` |
 | `ingestion_run` | o próprio pipeline | Um registro por arquivo processado (hash, status, linhas) | — |
 | `fund_profile` (view) | calculada | Categoria e segmento de cada fundo | — |
 | `distribution_adjusted` (view) | calculada | Proventos ativos, sem duplicatas, com valor por cota de hoje (ajustado por desdobramentos) | — |
-| `fund_metrics` (view) | calculada | Uma linha por ticker: preço, VP/cota, P/VP, último rendimento, DY 12m, liquidez | — |
+| `ticker_change` (view) | calculada | Trocas de ticker: código antigo → novo, detectadas no COTAHIST ou manuais (ver [Troca de ticker](#troca-de-ticker)) | — |
+| `ticker_lineage` (materialized view) | calculada | Cada ticker atual com os códigos que ele substituiu | `member_ticker` |
+| `fund_metrics` (view) | calculada | Uma linha por ticker atual (somando os códigos anteriores): preço, VP/cota, P/VP, último rendimento, DY 12m, liquidez | — |
 
 `watchlist` guarda fundos a acompanhar; para um FI-Infra, o `cnpj` informado é o que cria o fundo (ver
 [FI-Infra](#fi-infra)).
@@ -202,6 +212,11 @@ erDiagram
         text segment
         text note
     }
+    ticker_change_manual {
+        text old_ticker PK
+        text new_ticker
+        text note
+    }
     ingestion_run {
         bigint id PK
         text source
@@ -221,6 +236,7 @@ erDiagram
     security ||..o{ quote_daily : "ticker"
     security ||..o| watchlist : "ticker"
     security ||..o| fund_override : "ticker"
+    security ||..o| ticker_change_manual : "ticker = old_ticker, new_ticker"
     security }o..o{ corporate_action : "isin"
     security }o..o{ distribution : "isin"
     fund |o..o{ watchlist : "cnpj"
@@ -260,9 +276,12 @@ Os endpoints do FundosNET e da página do fundo na B3 não são APIs oficiais e 
    - Se o banco ainda não tem nenhum ticker BDI 14 (carregado antes do FI-Infra), recarrega todos os anos uma vez.
 4. **FI-Infra** (só se houver algum na watchlist): cadastro da CVM e informe diário do mês corrente e do anterior,
    cada arquivo só quando o sha256 mudou.
-5. **FundosNET**: o mesmo que `fiidb fnet-latest` (abaixo), incluindo os proventos de FI-Infra pela página da B3.
-6. **Vínculo ticker → fundo** (`fiidb/linking.py`), detalhado abaixo.
-7. **Seeds**: substitui `fund_override` e os eventos manuais de `corporate_action` pelo conteúdo dos CSVs.
+5. **Vínculo ticker → fundo** (`fiidb/linking.py`, detalhado abaixo), seguido da atualização de `ticker_lineage`:
+   a watchlist passa a usar o código novo de um fundo que trocou de ticker (ver [Troca de ticker](#troca-de-ticker)).
+6. **FundosNET**: o mesmo que `fiidb fnet-latest` (abaixo), incluindo os proventos de FI-Infra pela página da B3.
+7. **Vínculo** de novo (os avisos recém-baixados criam vínculos `fnet`).
+8. **Seeds**: substitui `ticker_change_manual`, `fund_override` e os eventos manuais de `corporate_action` pelo
+   conteúdo dos CSVs.
 
 Cada arquivo é uma transação própria (conexão em autocommit + `conn.transaction()`). Falhas são registradas em
 `ingestion_run` com `status = 'error'`, os demais arquivos seguem, e o comando sai com código 1.
@@ -387,17 +406,51 @@ Valores por cota mudam de escala num desdobramento: o TEPP11 pagava R$ 0,74 ante
   (`source = 'manual'`), sempre com a evidência na nota (salto de preço + número de cotas na CVM).
 - **Data**: `lastDatePrior` é a data-com do evento, o último pregão da cota antiga.
 - **Ajuste** (`distribution_adjusted`): cada provento é dividido pelo produto dos multiplicadores dos eventos do
-  mesmo ISIN com data-com **igual ou posterior** à data-com do provento. O valor original fica em `distribution`.
+  mesmo ISIN, ou do ISIN de outro código da mesma linhagem (ver [Troca de ticker](#troca-de-ticker)), com data-com
+  **igual ou posterior** à data-com do provento. Um evento listado sob os dois ISINs conta uma vez. O valor
+  original fica em `distribution`.
 - **Alerta**: depois de cada execução, saltos de preço de um pregão para o seguinte de 45% ou mais, sem evento
-  entre as duas datas, aparecem no log (`b3_funds.unexplained_jumps`). Podem ser um evento que a B3 não lista
+  entre as duas datas, aparecem no log (`b3_funds.unexplained_jumps`). A série atravessa trocas de ticker, então
+  um desdobramento junto com a troca (ATSA11B → ATSA11 em 2018, ×10) também aparece. Podem ser um evento que a B3 não lista
   (registre no CSV com o multiplicador) ou um movimento real, como a devolução de capital do VIUR11 em abril/2026
   (registre como `REVIEWED` com multiplicador 1, o que silencia o alerta sem ajustar nada). Nada é ajustado
   automaticamente.
 - Preços e VP/cota históricos ainda **não** são ajustados (as métricas usam só os valores mais recentes).
 
+## Troca de ticker
+
+Um fundo pode passar a negociar com outro código, mantendo as cotas: NAVT11 → VTOT11 (09/10/2026), MALL11 → PMLL11,
+CVBI11 → PCIP11, RVBI11 → PSEC11, RBFF11 → RBFM11, BBPO11 → TVRI11 e as antigas classes `XXXX11B` → `XXXX11`
+(2017–2024). O COTAHIST passa a ter dois tickers, e o FundosNET e a B3 usam o ISIN novo (as classes `11B`
+mantinham o ISIN). Sem tratamento, preço, liquidez e proventos ficariam divididos em duas séries e o DY 12m do
+código novo só começaria a valer um ano depois.
+
+- **Detecção** (view `ticker_change`): mesmo fundo (`fund_id`) e mesmo BDI, os dois códigos com o formato da cota
+  principal (`XXXX11` ou `XXXX11B`, o que exclui recibos e direitos `12`, `13`…), e o novo começa a negociar até
+  31 dias depois do último pregão do antigo. Em nov/2026 são 37 trocas detectadas. O preço segue contínuo na
+  emenda, salvo eventos simultâneos (ATSA11B → ATSA11 com desdobramento ×10, que o alerta de salto aponta).
+- **Manual**: `seeds/ticker_changes.csv` (`old_ticker,new_ticker,note`) para o que a detecção não pega, como um
+  código novo ainda sem vínculo (FI-Infra, vinculado só pela watchlist) ou uma lacuna maior que 31 dias. A linha
+  manual prevalece. Os dois códigos precisam estar no COTAHIST; até lá a linha é guardada e ignorada (com aviso).
+- **Linhagem** (`ticker_lineage`): cada ticker atual com os códigos que substituiu (`depth` 1, 2…). É
+  *materialized view* porque o planejador não tem estatísticas de uma consulta recursiva e superestimava cada
+  junção em milhões de linhas, com segundos de compilação JIT. `linking.refresh_lineage` a recalcula ao fim de
+  todo vínculo e da carga das seeds. Um ticker que ainda não está nela (COTAHIST carregado, vínculo ainda não
+  rodado) aparece nas métricas só com os próprios dados.
+- **Métricas**: `fund_metrics` tem uma linha só, a do código atual. Liquidez e proventos somam os códigos
+  anteriores; um provento informado sob os dois ISINs (mesmo tipo e data-com) conta uma vez. O preço é o do código
+  atual. `previous_tickers` lista os anteriores.
+- **Watchlist**: depois de cada vínculo, uma entrada com o código antigo é renomeada para o atual, mantendo CNPJ e
+  `history_since` (os avisos são buscados pelo CNPJ e cobrem os dois códigos). O log avisa, porque a linha da
+  planilha passa a ter o ticker novo: atualize as buscas e o `GOOGLEFINANCE`. `watch add`, `watch remove` e
+  `fnet-history` aceitam o código antigo.
+- **Overrides**: `seeds/fund_overrides.csv` é por ticker; um override com o código antigo deixa de valer, e a carga
+  das seeds avisa para renomeá-lo.
+
 ## Métricas (`fund_metrics`)
 
-View com uma linha por ticker, para a planilha e a futura API.
+View com uma linha por ticker atual (um código que trocou de ticker aparece só pelo novo; ver
+[Troca de ticker](#troca-de-ticker)), para a planilha e a futura API.
 
 | Coluna | Definição |
 |---|---|
@@ -408,6 +461,7 @@ View com uma linha por ticker, para a planilha e a futura API.
 | `income_12m`, `dividend_yield_12m` | Soma dos rendimentos com data-com nos últimos 12 meses (ajustados por desdobramentos), e essa soma / `price`. **Só preenchido** para fundos da watchlist com `history_since` ≥ 12 meses atrás; senão NULL (não zero) |
 | `avg_volume_21d` | Volume financeiro médio dos últimos 21 pregões (dentro de 60 dias) |
 | `active`, `watched` | Negociado nos últimos 30 dias; está na watchlist |
+| `previous_tickers` | Códigos anteriores das mesmas cotas, do mais recente ao mais antigo (`NAVT11`); NULL se não houver |
 
 Se dois avisos ativos informam o mesmo provento (mesmo ISIN, tipo e data-com), vale o entregue por último.
 Datas relativas ("últimos 12 meses") usam o fuso de São Paulo.
@@ -421,9 +475,11 @@ fora da sua aba.
 
 - Colunas (`sheets.COLUMNS`): `ticker, nome, categoria, segmento, vp_cota, mes_ref_vp, ultimo_rendimento,
   data_com, data_pagamento, rendimentos_12m, liquidez_media_21d, cotistas, preco_fechamento, data_fechamento,
-  atualizado_em, patrimonio_liquido`. As fórmulas do usuário dependem dos nomes: **só acrescente colunas no fim,
+  atualizado_em, patrimonio_liquido, tickers_anteriores`. As fórmulas do usuário dependem dos nomes: **só acrescente colunas no fim,
   nunca renomeie**. Colunas novas vão em `sheets.LATE_COLUMNS`, depois de `atualizado_em`, para nenhuma mudar de
-  posição. `patrimonio_liquido` é o PL em R$ do mesmo informe do `vp_cota` (`mes_ref_vp`).
+  posição. `patrimonio_liquido` é o PL em R$ do mesmo informe do `vp_cota` (`mes_ref_vp`). `tickers_anteriores`
+  lista os códigos antigos de um fundo que trocou de ticker: a linha passa a ter o código novo, e uma busca pelo
+  antigo deixa de encontrar.
 - O pipeline manda os "ingredientes" (VP/cota, soma de 12 meses); P/VP e DY são calculados na planilha com o
   preço ao vivo do `GOOGLEFINANCE`.
 - Escrita: `PUT` a partir de A1 com `USER_ENTERED` (datas ISO viram datas), depois limpa as linhas abaixo; a aba
@@ -461,7 +517,7 @@ fundo que se declara listado em bolsa foi tentado e ligou KISU11 e HUSC11 a fund
 Para descobrir o CNPJ de um ticker sem vínculo: os avisos recentes do FundosNET (busca sem filtro de CNPJ) têm
 `nomePregao` igual ao `short_name` do COTAHIST, e o XML de cada aviso traz `CNPJFundo` e o ticker. Confirme o
 ticker no XML antes de usar o CNPJ. Ao carregar o histórico, o pipeline avisa se os avisos de um CNPJ citam outros
-tickers e não o da watchlist (sinal de CNPJ errado).
+tickers e nenhum código (atual ou anterior) do ticker da watchlist (sinal de CNPJ errado).
 
 Hoje ~40 tickers de FII e 5 de Fiagro negociados nos últimos 30 dias ficam sem fundo. Para um deles entrar na watchlist, use
 `fiidb watch add TICKER --cnpj <cnpj>`; o vínculo `fnet` passa a valer depois da primeira carga.
@@ -508,12 +564,14 @@ O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é
 | FundosNET | Avisos de recibos de subscrição (HGLG13, HGLG14…) vêm junto com os da cota principal | Guardados com o próprio ISIN; métricas usam o ISIN do ticker |
 | B3/FundosNET | Valores por cota de antes de um desdobramento estão na escala antiga (TEPP11: 0,74 → 0,074) | `corporate_action` + `distribution_adjusted` |
 | B3 | Fator de desdobramento publicado como % de cotas novas (900 = ×10) | `b3_funds.multiplier` |
+| B3 | Fundo troca de ticker (e de ISIN): NAVT11 → VTOT11. A B3 não lista a troca como evento | Detecção em `ticker_change`, métricas pela linhagem, watchlist renomeada; ver [Troca de ticker](#troca-de-ticker) |
+| B3 | Desdobramento que a B3 não lista, às vezes perto de uma troca de ticker (RBFF11 ×5 em 15/01/2026, uma semana antes de virar RBFM11) | Alerta de salto + `seeds/corporate_actions.csv` |
 
 ## Testes
 
 - `uv run pytest`: parsers, com fixtures reais em `pipeline/tests/fixtures/`.
 - Com `FIIDB_TEST_DATABASE_URL` apontando para um banco descartável, também os testes de carga
   (`tests/test_load.py`, `tests/test_fnet_load.py`, `tests/test_corporate_actions.py`, `tests/test_sheets.py`,
-  `tests/test_fiinfra.py`, `tests/test_fiagro.py`;
+  `tests/test_fiinfra.py`, `tests/test_fiagro.py`, `tests/test_ticker_change.py`;
   fixtures em `tests/conftest.py`). Eles **apagam o schema
   `public`** desse banco e aplicam `db/migrations`. FundosNET, CVM e B3 são simulados com `httpx.MockTransport`.

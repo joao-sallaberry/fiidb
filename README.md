@@ -46,7 +46,9 @@ uv run fiidb watch add KDIF11 --cnpj 26.324.298/0001-89
 ```
 
 A view `fund_metrics` reúne, por ticker, preço, VP/cota, P/VP, último rendimento, DY 12m e liquidez. Proventos são
-ajustados por desdobramentos (listados pela B3), sempre na cota de hoje.
+ajustados por desdobramentos (listados pela B3), sempre na cota de hoje. Quando um fundo troca de ticker
+(NAVT11 → VTOT11), o código novo herda o histórico do antigo e a watchlist passa a usá-lo; a planilha avisa na
+coluna `tickers_anteriores`, e as suas buscas pelo código antigo precisam ser atualizadas.
 
 ## Google Sheets
 
@@ -86,6 +88,8 @@ Arquitetura da ingestão (fontes, tabelas, armadilhas dos dados): [docs/ingestio
   descartável, roda também os testes de carga).
 - `seeds/fund_overrides.csv` — correções manuais de categoria/segmento por ticker (recarregado no `catch-up` ou com
   `fiidb seed`).
+- `seeds/corporate_actions.csv` — desdobramentos que a B3 não lista; `seeds/ticker_changes.csv` — trocas de ticker
+  que o pipeline não detecta sozinho.
 
 ## Classificação dos fundos
 
