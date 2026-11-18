@@ -68,7 +68,7 @@ flowchart LR
 | `fund` | CVM, CSV `geral` (FII); informe mensal Fiagro; cadastro `registro_classe` (FI-Infra da watchlist) | Cadastro: CNPJ, tipo, nome, ISIN informado, segmento declarado, administrador | `cnpj` |
 | `monthly_report` | CVM, CSVs `complemento` + `ativo_passivo` (FII); informe mensal Fiagro (`raw.informe = 'fiagro'`) | PL, VP/cota, cotistas, rentabilidade, DY do mês; composição do ativo em `raw` | `(fund_id, ref_month)` |
 | `daily_report` | CVM informe diário, só FI-Infra da watchlist | VP/cota, PL, valor da carteira, cotistas por dia | `(fund_id, ref_date)` |
-| `security` | B3 COTAHIST (BDI 12 e 14) + vínculo calculado | Tickers negociados, ISIN, BDI, período de negociação, `fund_id` | `ticker` |
+| `security` | B3 COTAHIST (BDI 12, 13 e 14) + vínculo calculado | Tickers negociados, ISIN, BDI, período de negociação, `fund_id` | `ticker` |
 | `quote_daily` | B3 COTAHIST | OHLC, volume, nº de negócios por pregão (sem ajuste) | `(ticker, trade_date)` |
 | `distribution` | FII e Fiagro: B3 FundosNET (`source = 'fnet'`); FI-Infra: página do fundo na B3, `cashDividends` (`source = 'b3'`). Só fundos da `watchlist` | Rendimentos e amortizações: data-com, pagamento, valor por cota | `fnet`: `(fnet_document_id, isin, kind)`; `b3`: `(isin, kind, base_date)` |
 | `fnet_document` | B3 FundosNET (busca) | Avisos já processados: versão, situação (ativo/cancelado/inativo), erro | `id` |
@@ -144,7 +144,7 @@ erDiagram
     security {
         text ticker PK
         text isin
-        text bdi_code "12 FII | 14 Fiagro, FI-Infra etc."
+        text bdi_code "12 FII | 13 Fiagro | 14 Fiagro, FI-Infra etc."
         text short_name
         date first_trade_date
         date last_trade_date
@@ -273,7 +273,8 @@ Os endpoints do FundosNET e da página do fundo na B3 não são APIs oficiais e 
    - anos fechados: arquivo anual, uma única vez (cacheado em `FIIDB_CACHE_DIR`, padrão `~/.cache/fiidb`);
    - ano corrente: arquivo anual na primeira vez, depois um arquivo diário por dia útil desde a última cotação.
      404 = feriado ou ainda não publicado (é tentado de novo na próxima execução).
-   - Se o banco ainda não tem nenhum ticker BDI 14 (carregado antes do FI-Infra), recarrega todos os anos uma vez.
+   - Ano carregado antes de o pipeline guardar os BDIs 13 e 14 (`ALL_BDI_SINCE` em `b3_cotahist.py`) é carregado
+     de novo, uma vez (anos fechados vêm do cache).
 4. **FI-Infra** (só se houver algum na watchlist): cadastro da CVM e informe diário do mês corrente e do anterior,
    cada arquivo só quando o sha256 mudou.
 5. **Vínculo ticker → fundo** (`fiidb/linking.py`, detalhado abaixo), seguido da atualização de `ticker_lineage`:
@@ -322,7 +323,7 @@ de todos os tipos: imobiliário, direitos creditórios, participações); a maio
 
 | Dado | Fonte | Observação |
 |---|---|---|
-| Preço | COTAHIST, BDI 14 | 36 tickers `FIAGRO …` negociados em nov/2026. BTAL11 e BTRA11 continuam no BDI 12 |
+| Preço | COTAHIST, BDI 13 e 14 | Até out/2025 os Fiagros negociavam no BDI 13 (só Fiagro); em 30/10/2025 a maioria passou ao 14. Em nov/2026, 38 tickers `FIAGRO …`, 3 ainda no 13 (BBGO11, IAAG11, LAFI11). BTAL11 continua no BDI 12 |
 | Cadastro, VP/cota, PL, cotistas | CVM `inf_mensal_fiagro_AAAAMM.zip` | Um zip por mês desde 2025-05. Só o CSV principal é lido (uma linha por classe, 133 colunas); o de subclasses é ignorado |
 | Proventos | FundosNET | Como FII; só fundos da watchlist |
 
@@ -346,10 +347,11 @@ marcada. Um fundo cujo informe FII ainda é o mais recente guarda o informe Fiag
   PL inteiro) e VP ≤ 0 ficam com VP NULL (60 de 310 em set/2026), original em `raw`.
 - ISIN em branco em ~40% das linhas; um ISIN em branco não apaga o que o fundo já tinha.
 
-**Vínculo**: pelo ISIN, como FII, mas no BDI 14 só para fundos `FIAGRO` (o BDI 14 tem ETFs, FIPs e FIDCs). Dos 36
-tickers negociados, 27 ligam por `isin` e 4 por `isin_issuer` (KNCA11 negocia como `BRKNCACTF006` e informa
-`BRKNCACTF014`; RZEO11 informa o ISIN de um recibo). Ficam sem fundo os de ISIN ambíguo ou ausente: RURA11
-(`BRRURAR01M16` em dois fundos), FZDA11 (`BRFZDACTF008` em dois), AAGR11, BRFT11, CTEM11. Para esses, use
+**Vínculo**: pelo ISIN, como FII, mas nos BDIs 13 e 14 só para fundos `FIAGRO` (o BDI 14 tem ETFs, FIPs e FIDCs).
+Dos 38 tickers negociados em nov/2026, 24 ligam por `isin`, 3 por `isin_issuer` (KNCA11 negocia como
+`BRKNCACTF006` e informa `BRKNCACTF014`; RZEO11 informa o ISIN de um recibo) e 7 por `fnet` (watchlist). Ficam sem
+fundo os de ISIN ambíguo ou ausente: RURA11 até entrar na watchlist (`BRRURAR01M16` em dois fundos), FZDA11
+(`BRFZDACTF008` em dois), AAGR11, BRFT11, CTEM11, VHFA11. Para esses, use
 `fiidb watch add TICKER --cnpj <cnpj>` **depois** de um `catch-up`: com o CNPJ já em `fund` como Fiagro, o comando
 segue o fluxo do FundosNET; um CNPJ desconhecido num ticker BDI 14 é tratado como FI-Infra.
 
@@ -425,7 +427,7 @@ CVBI11 → PCIP11, RVBI11 → PSEC11, RBFF11 → RBFM11, BBPO11 → TVRI11 e as 
 mantinham o ISIN). Sem tratamento, preço, liquidez e proventos ficariam divididos em duas séries e o DY 12m do
 código novo só começaria a valer um ano depois.
 
-- **Detecção** (view `ticker_change`): mesmo fundo (`fund_id`) e mesmo BDI, os dois códigos com o formato da cota
+- **Detecção** (view `ticker_change`): mesmo fundo (`fund_id`) e mesmo BDI (13 e 14 contam como um só), os dois códigos com o formato da cota
   principal (`XXXX11` ou `XXXX11B`, o que exclui recibos e direitos `12`, `13`…), e o novo começa a negociar até
   31 dias depois do último pregão do antigo. Em nov/2026 são 37 trocas detectadas. O preço segue contínuo na
   emenda, salvo eventos simultâneos (ATSA11B → ATSA11 com desdobramento ×10, que o alerta de salto aponta).
@@ -506,8 +508,8 @@ vazio, com erro de digitação ou de recibo de subscrição (`...R01M...`). Os m
 |---|---|
 | `fnet` | ISIN de um provento do FundosNET, buscado pelo CNPJ do fundo (só fundos da watchlist) |
 | `watchlist` | CNPJ informado em `fiidb watch add --cnpj` (FI-Infra: conferido com cotas × VP) |
-| `isin` | ISIN do COTAHIST = ISIN informado à CVM, se só um fundo o informa (BDI 12; no BDI 14, só se o fundo é Fiagro) |
-| `isin_issuer` | Mesmo código de emissor (caracteres 3–6 do ISIN, ex. `BR`**`HGLG`**`CTF004`) e só um FII com ele (BDI 12), ou só um Fiagro com ele (BDI 14) |
+| `isin` | ISIN do COTAHIST = ISIN informado à CVM, se só um fundo o informa (BDI 12; nos BDIs 13 e 14, só se o fundo é Fiagro) |
+| `isin_issuer` | Mesmo código de emissor (caracteres 3–6 do ISIN, ex. `BR`**`HGLG`**`CTF004`) e só um FII com ele (BDI 12), ou só um Fiagro com ele (BDI 13 ou 14) |
 
 Fundos *feeder* costumam informar o ISIN do fundo principal (o `BRSPTWCTF002` aparece em 7 fundos). Um ISIN
 ambíguo não vincula nada, e vínculos `isin` que ficaram ambíguos são desfeitos (`isin_stale`). Desempatar pelo
@@ -550,6 +552,7 @@ O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é
 | CVM | Segmento declarado grosseiro (maioria "Multicategoria") | Classificação própria + overrides |
 | CVM | ISIN vazio ou errado | Vínculo em camadas |
 | B3 | FIIs no BDI 12, mas Fiagro/FI-Infra no BDI 14 junto com ETFs, FIPs e FIDCs | Os dois são carregados; o tipo vem da watchlist/CVM, não da B3. Vínculo por ISIN no BDI 12 e, no BDI 14, só com fundos Fiagro |
+| B3 | Fiagros no BDI 13 até out/2025, e alguns ainda nele; um ticker pode mudar de BDI | BDI 13 carregado e tratado como o 14; `security.bdi_code` é o do último pregão |
 | CVM | Fiagros saíram do informe FII para um informe próprio em 2025; alguns meses estão nos dois | Mesmo CNPJ, mesma série em `monthly_report`; o informe Fiagro prevalece (`raw.informe`) |
 | CVM | Informe Fiagro: percentuais em % e VP/cota com 2 casas; fundos de balcão com "1 cota" | ÷ 100; VP = PL ÷ cotas quando confere; VP NULL para cota única |
 | FundosNET | Avisos de um Fiagro divididos entre `tipoFundo` 1 (até ~set/2025) e 11 | Busca sem `tipoFundo` |

@@ -136,8 +136,9 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
   para o código novo a cada vínculo.
 - **Planilha:** colunas da aba `fiidb` são referenciadas por nome nas fórmulas do autor; só acrescente no fim
   (`sheets.LATE_COLUMNS`, depois de `atualizado_em`).
-- **Escopo:** FII (BDI 12, todos), Fiagro (BDI 14, todos, `fund.type = 'FIAGRO'`) e FI-Infra (BDI 14, só os da
-  watchlist, `fund.type = 'FIINFRA'`). O COTAHIST carrega todo o BDI 14 (ETFs, FIPs etc. ficam sem fundo). Sem
+- **Escopo:** FII (BDI 12, todos), Fiagro (BDI 14, e 13 até out/2025 e para alguns ainda hoje; todos,
+  `fund.type = 'FIAGRO'`) e FI-Infra (BDI 14, só os da watchlist, `fund.type = 'FIINFRA'`). O COTAHIST carrega
+  todo o BDI 13 e 14 (ETFs, FIPs etc. ficam sem fundo). Sem
   fontes pagas, sem dados intraday.
 - **Fiagro:** segue o caminho do FII (informe mensal → `monthly_report`, proventos pelo FundosNET), não o do
   FI-Infra. O informe Fiagro traz percentuais em % e prevalece sobre o informe FII do mesmo mês.
@@ -169,7 +170,7 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
    próprio da CVM, proventos pelo FundosNET)
 6. API Hono/TS com tokens; deploy (Oracle Always Free ou VPS); frontend
 
-Pendências conhecidas: ~40 tickers de FII e 5 de Fiagro (RURA11, FZDA11, AAGR11, BRFT11, CTEM11) negociados sem
+Pendências conhecidas: ~40 tickers de FII e 5 de Fiagro (FZDA11, AAGR11, BRFT11, CTEM11, VHFA11) negociados sem
 fundo vinculado (usar `watch add --cnpj`, CNPJ confirmado pelo ticker no XML de um aviso do FundosNET; ver
 docs/ingestion.md); Fiagro sem subdivisão terras/crédito;
 agendamento dos jobs (`catch-up` no boot/diário, `fnet-latest` frequente) ainda não configurado; segmento vazio para

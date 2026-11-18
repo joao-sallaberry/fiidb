@@ -2,8 +2,9 @@
 
 Layout: https://www.b3.com.br/data/files/33/67/B9/50/D84057102C784E47AC094EA8/SeriesHistoricas_Layout.pdf
 Files: COTAHIST_A{yyyy}.ZIP (year), COTAHIST_D{ddmmyyyy}.ZIP (day, published in the evening).
-FIIs trade under BDI code 12; FI-Infra and Fiagro share BDI 14 with ETFs, FIPs and FIDCs. Both are
-loaded; which BDI 14 tickers are FI-Infra comes from the watchlist (`fiidb watch add --cnpj`).
+FIIs trade under BDI code 12; FI-Infra and Fiagro share BDI 14 with ETFs, FIPs and FIDCs. Fiagro
+traded under BDI 13 (Fiagro only) until 2025-10, and a few still do. All three are loaded; which
+BDI 14 tickers are FI-Infra comes from the watchlist (`fiidb watch add --cnpj`).
 """
 
 import io
@@ -11,7 +12,7 @@ import logging
 import zipfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -24,7 +25,10 @@ log = logging.getLogger(__name__)
 
 SOURCE = "b3_cotahist"
 BASE_URL = "https://bvmf.bmfbovespa.com.br/InstDados/SerHist/"
-BDI_CODES = {"12", "14"}
+BDI_CODES = {"12", "13", "14"}
+# Years loaded before this were loaded without BDI 13 (the Fiagro history until 2025-10), or before
+# BDI 14: catch_up loads them again once.
+ALL_BDI_SINCE = datetime(2026, 11, 18, 22, 30, tzinfo=UTC)
 MARKET_SPOT = "010"
 
 
@@ -96,17 +100,18 @@ def load(conn: psycopg.Connection, quotes: list[Quote]) -> int:
         update=[],
     )
     # Merge date ranges; identity fields follow the most recent trade.
-    for ticker, isin, _bdi, name, first, last in securities.values():
+    for ticker, isin, bdi, name, first, last in securities.values():
         conn.execute(
             """
             update security set
                 first_trade_date = least(first_trade_date, %(first)s),
                 isin = case when %(last)s >= last_trade_date then %(isin)s else isin end,
+                bdi_code = case when %(last)s >= last_trade_date then %(bdi)s else bdi_code end,
                 short_name = case when %(last)s >= last_trade_date then %(name)s else short_name end,
                 last_trade_date = greatest(last_trade_date, %(last)s)
             where ticker = %(ticker)s
             """,
-            {"ticker": ticker, "isin": isin, "name": name, "first": first, "last": last},
+            {"ticker": ticker, "isin": isin, "bdi": bdi, "name": name, "first": first, "last": last},
         )
     return db.upsert(
         conn,
@@ -156,17 +161,16 @@ def catch_up(
     """Closed years come from yearly files (once); the current year from the yearly file on
     first run, then one daily file per missing weekday."""
     today = today or dates.today()
-    # Databases loaded when only BDI 12 was kept: reload every year once (cached) to add BDI 14.
-    (has_quotes, has_bdi14) = conn.execute(
-        "select exists (select 1 from security), exists (select 1 from security where bdi_code = '14')"
-    ).fetchone()
-    if has_quotes and not has_bdi14:
-        log.info("%s: reloading all years to add BDI 14 (FI-Infra, Fiagro, ETFs)", SOURCE)
-        for year in range(start_year, today.year + 1):
+    for year in range(start_year, today.year + 1):
+        run = conn.execute(
+            "select status, started_at from ingestion_run where source = %s and period = %s "
+            "order by started_at desc limit 1",
+            (SOURCE, f"A{year}"),
+        ).fetchone()
+        if run is not None and run[0] == "ok" and run[1] < ALL_BDI_SINCE:
+            log.info("%s A%d: loading again to add BDI 13/14 (Fiagro, FI-Infra)", SOURCE, year)
             ingest_year(conn, http, year, cache_dir=cache_dir)
-    for year in range(start_year, today.year):
-        previous = db.last_run(conn, SOURCE, f"A{year}")
-        if previous is None or previous[0] != "ok":
+        elif year < today.year and (run is None or run[0] != "ok"):
             ingest_year(conn, http, year, cache_dir=cache_dir)
 
     (last,) = conn.execute(

@@ -26,6 +26,16 @@ def test_cotahist_bdi14_includes_fiagro_and_infra():
     assert tickers == {"KNCA11", "JURO11"}
 
 
+def test_cotahist_keeps_fiagro_under_bdi13():
+    # BBGO11 traded under BDI 13 (as most Fiagro until 2025-10), then 14, and again 13.
+    lines = (FIXTURES / "cotahist_bbgo_bdi13.txt").read_text(encoding="latin-1").splitlines()
+    assert [(q.ticker, q.trade_date, q.bdi_code) for q in b3_cotahist.parse_lines(lines)] == [
+        ("BBGO11", date(2025, 10, 29), "13"),
+        ("BBGO11", date(2025, 10, 30), "14"),
+        ("BBGO11", date(2026, 11, 17), "13"),
+    ]
+
+
 def test_cvm_fii_2026_layout():
     funds, reports = cvm_fii.parse_zip((FIXTURES / "inf_mensal_fii_sample.zip").read_bytes())
 

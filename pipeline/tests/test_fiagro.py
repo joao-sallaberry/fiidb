@@ -1,15 +1,17 @@
 """Fiagro: CVM monthly report of its own, loaded into fund/monthly_report. The parser runs without a
 database; loads use a real Postgres (see conftest.py)."""
 
+import io
+import zipfile
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import httpx
 from conftest import FIXTURES
 
-from fiidb import cli, linking
-from fiidb.sources import cvm_fiagro, cvm_fii, fnet
+from fiidb import cli, db, linking
+from fiidb.sources import b3_cotahist, cvm_fiagro, cvm_fii, fnet
 
 SAMPLE = (FIXTURES / "inf_mensal_fiagro_sample.zip").read_bytes()
 SNAG = "28152777000190"
@@ -159,11 +161,11 @@ def test_fiagro_report_older_than_the_fii_one_is_kept_without_changing_the_fund(
 
 def test_fiagro_tickers_are_linked_by_isin_and_issuer(conn, load_fixtures):
     load_fixtures(conn)  # KNCA11 trades (BDI 14) as BRKNCACTF006; the fund reports BRKNCACTF014
-    for ticker, isin in (("SNAG11", "BRSNAGCTF000"), ("RURA11", "BRRURACTF004")):
+    for ticker, isin, bdi in (("SNAG11", "BRSNAGCTF000", "13"), ("RURA11", "BRRURACTF004", "14")):
         conn.execute(
             "insert into security (ticker, isin, bdi_code, short_name, first_trade_date, last_trade_date) "
-            "values (%s, %s, '14', 'FIAGRO', '2026-10-01', '2026-10-01')",
-            (ticker, isin),
+            "values (%s, %s, %s, 'FIAGRO', '2026-10-01', '2026-10-01')",
+            (ticker, isin, bdi),
         )
     load_sample(conn)
     linking.link_securities(conn)
@@ -172,7 +174,7 @@ def test_fiagro_tickers_are_linked_by_isin_and_issuer(conn, load_fixtures):
     links = dict(
         conn.execute(
             "select s.ticker, s.link_method || ' ' || f.cnpj from security s join fund f on f.id = s.fund_id "
-            "where s.bdi_code = '14'"
+            "where s.bdi_code in ('13', '14')"
         ).fetchall()
     )
     # RURA11: two funds report its (receipt) ISIN, so nothing links it; `watch add --cnpj` does.
@@ -209,3 +211,48 @@ def test_ingest_month_is_idempotent(conn):
     assert conn.execute("select count(*) from monthly_report").fetchone() == (6,)
     runs = conn.execute("select period, status, rows from ingestion_run where source = %s", (cvm_fiagro.SOURCE,))
     assert runs.fetchall() == [("2026-09", "ok", 6), ("2026-09", "ok", 6)]
+
+
+BBGO_LINES = (FIXTURES / "cotahist_bbgo_bdi13.txt").read_text(encoding="latin-1").splitlines()
+
+
+def test_bdi_code_follows_the_latest_trade(conn):
+    quotes = list(b3_cotahist.parse_lines(BBGO_LINES))
+    b3_cotahist.load(conn, quotes[1:2])  # 2025-10-30, BDI 14
+    b3_cotahist.load(conn, quotes[2:])  # 2026-11-17, BDI 13
+    b3_cotahist.load(conn, quotes[:1])  # an older year loaded later: 2025-10-29, BDI 13
+    b3_cotahist.load(conn, quotes[1:2])
+    assert conn.execute("select bdi_code, first_trade_date, last_trade_date from security").fetchone() == (
+        "13",
+        date(2025, 10, 29),
+        date(2026, 11, 17),
+    )
+
+
+def test_years_loaded_without_bdi13_are_loaded_again_once(conn):
+    lines = "\r\n".join(BBGO_LINES[:2]).encode("latin-1")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("COTAHIST_A2025.TXT", lines)
+    requested = []
+
+    def yearly():
+        return [name for name in requested if name.startswith("COTAHIST_A")]
+
+    def handler(request):
+        requested.append(request.url.path.rsplit("/", 1)[-1])
+        if requested[-1] == "COTAHIST_A2025.ZIP":
+            return httpx.Response(200, content=archive.getvalue())
+        return httpx.Response(404)
+
+    # A2025 loaded (BDI 12 and 14 only) before BDI 13 was kept.
+    db.record_run(
+        conn, source=b3_cotahist.SOURCE, period="A2025", status="ok", started_at=datetime(2026, 10, 9, tzinfo=UTC)
+    )
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        b3_cotahist.catch_up(conn, http, 2025, today=date(2026, 1, 2))
+        assert yearly() == ["COTAHIST_A2025.ZIP", "COTAHIST_A2026.ZIP"]  # no 2026 quotes yet: yearly file
+        requested.clear()
+        b3_cotahist.catch_up(conn, http, 2025, today=date(2026, 1, 2))
+    assert yearly() == ["COTAHIST_A2026.ZIP"]  # 2025 is not loaded again
+    assert conn.execute("select count(*) from quote_daily where ticker = 'BBGO11'").fetchone() == (2,)
