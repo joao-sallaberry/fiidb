@@ -42,6 +42,10 @@ COLUMNS = [
     ("preco_fechamento", "price"),
     ("data_fechamento", "price_date"),
 ]
+# Added after `atualizado_em` already was the last column, so they come after it: no column moves.
+LATE_COLUMNS = [
+    ("patrimonio_liquido", "net_assets"),
+]
 
 
 def _cell(value: object) -> object:
@@ -57,12 +61,14 @@ def _cell(value: object) -> object:
 
 
 def build_rows(conn: psycopg.Connection) -> list[list[object]]:
-    """Header plus one row per watchlist ticker, with an `atualizado_em` column at the end."""
-    columns = ", ".join(column for _, column in COLUMNS)
+    """Header plus one row per watchlist ticker: COLUMNS, `atualizado_em`, then LATE_COLUMNS."""
+    columns = ", ".join(column for _, column in COLUMNS + LATE_COLUMNS)
     records = conn.execute(f"select {columns} from fund_metrics where watched order by ticker").fetchall()
     updated = _cell(dates.now())
-    return [[header for header, _ in COLUMNS] + ["atualizado_em"]] + [
-        [_cell(v) for v in record] + [updated] for record in records
+    split = len(COLUMNS)
+    header = [h for h, _ in COLUMNS] + ["atualizado_em"] + [h for h, _ in LATE_COLUMNS]
+    return [header] + [
+        [_cell(v) for v in record[:split]] + [updated] + [_cell(v) for v in record[split:]] for record in records
     ]
 
 

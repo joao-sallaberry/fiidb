@@ -15,7 +15,7 @@ class Entry:
     cnpj: str | None  # explicit override, else the linked fund's CNPJ
     name: str | None
     history_since: date | None
-    fund_type: str | None  # FII | FIINFRA; None when the CNPJ is not in `fund` yet
+    fund_type: str | None  # FII | FIAGRO | FIINFRA; None when the CNPJ is not in `fund` yet
 
     @property
     def is_infra(self) -> bool:
@@ -71,3 +71,4 @@ def mark_history(conn: psycopg.Connection, ticker: str, since: date) -> None:
         "update watchlist set history_since = least(coalesce(history_since, %(since)s), %(since)s) where ticker = %(t)s",
         {"since": since, "t": ticker},
     )
+

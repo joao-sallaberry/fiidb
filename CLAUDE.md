@@ -1,6 +1,6 @@
 # fiidb
 
-Dados de fundos imobiliários (FII) e de infraestrutura (FI-Infra) listados na B3, apenas de fontes públicas
+Dados de fundos imobiliários (FII), do agronegócio (Fiagro) e de infraestrutura (FI-Infra) listados na B3, apenas de fontes públicas
 gratuitas (CVM Dados Abertos, B3 COTAHIST, B3 FundosNET, página do fundo na B3). Um pipeline de ingestão em Python
 grava no Postgres. Uma API em TypeScript (Hono + Kysely) virá depois. O consumidor inicial é uma planilha Google
 Sheets com tabelas grandes (muitos fundos × algumas colunas), na qual o pipeline escreve pela Sheets API; os valores
@@ -45,13 +45,13 @@ pipeline/               projeto Python (uv), pacote `fiidb`
     dates.py            today()/now() no fuso de São Paulo, parse_date
     linking.py          vínculo ticker (security) → fundo (fund)
     seeds.py            carga de seeds/
-    watchlist.py        fundos cujos proventos são buscados (FundosNET para FII, página da B3 para FI-Infra)
+    watchlist.py        fundos cujos proventos são buscados (FundosNET para FII e Fiagro, página da B3 para FI-Infra)
     sheets.py           escreve a aba `fiidb` da planilha (Google Sheets API, service account)
-    sources/            um módulo por fonte: cvm_fii, cvm_fi (cadastro + informe diário, FI-Infra), b3_cotahist,
-                        fnet, b3_funds (desdobramentos; proventos de FI-Infra)
+    sources/            um módulo por fonte: cvm_fii, cvm_fiagro (informe mensal Fiagro), cvm_fi (cadastro + informe
+                        diário, FI-Infra), b3_cotahist, fnet, b3_funds (desdobramentos; proventos de FI-Infra)
   tests/                conftest.py (banco de teste), test_parsers.py (sem banco), test_load.py,
-                        test_fnet_load.py, test_corporate_actions.py, test_sheets.py, test_fiinfra.py (APIs
-                        simuladas com httpx.MockTransport), fixtures/ (amostras reais)
+                        test_fnet_load.py, test_corporate_actions.py, test_sheets.py, test_fiinfra.py,
+                        test_fiagro.py (APIs simuladas com httpx.MockTransport), fixtures/ (amostras reais)
 docker-compose.yml      postgres + migrate (dbmate, profile "tools")
 ```
 
@@ -67,13 +67,14 @@ cd pipeline
 uv run fiidb catch-up                         # idempotente; baixa só o que falta (roda no boot/diariamente)
 uv run fiidb status                           # contagens + última execução por fonte
 uv run fiidb cvm-fii 2025 --force             # recarrega um ano da CVM mesmo sem mudança
+uv run fiidb cvm-fiagro 2026-09 --force       # recarrega um mês do informe Fiagro
 uv run fiidb cotahist --year 2024             # ou --day 2026-10-01
 uv run fiidb seed                             # recarrega seeds/*.csv
 
-uv run fiidb watch add HGLG11 KNRI11          # + 400 dias de proventos (--no-history, --cnpj p/ ticker sem fundo)
+uv run fiidb watch add HGLG11 SNAG11          # FII ou Fiagro: + 400 dias de proventos (--no-history, --cnpj p/ ticker sem fundo)
 uv run fiidb watch add KDIF11 --cnpj 26.324.298/0001-89   # FI-Infra: CNPJ obrigatório, conferido (cotas × VP = PL)
 uv run fiidb watch list | remove TICKER
-uv run fiidb fnet-latest                      # avisos (FII), proventos B3 (FI-Infra) e desdobramentos da watchlist,
+uv run fiidb fnet-latest                      # avisos (FII, Fiagro), proventos B3 (FI-Infra) e desdobramentos da watchlist,
                                               # e atualiza a planilha (frequente)
 uv run fiidb fnet-history HGLG11 [--since AAAA-MM-DD] [--force]   # histórico completo, ad hoc
 uv run fiidb sheets                           # reescreve a aba da planilha
@@ -91,7 +92,7 @@ indicado**; nunca aponte para `fiidb`.
 | Variável | Padrão | Uso |
 |---|---|---|
 | `DATABASE_URL` | `postgresql://fiidb:fiidb@localhost:5432/fiidb` | banco do pipeline |
-| `FIIDB_START_YEAR` | `2016` | primeiro ano carregado (CVM e COTAHIST) |
+| `FIIDB_START_YEAR` | `2016` | primeiro ano carregado (CVM FII e COTAHIST; o informe Fiagro começa em 2025-05) |
 | `FIIDB_CACHE_DIR` | `~/.cache/fiidb` | COTAHIST anual de anos fechados (~90 MB cada) |
 | `FIIDB_SEEDS_DIR` | `<repo>/seeds` | arquivos de seed |
 | `FIIDB_SHEET_ID` | — | planilha (ID da URL); sem ele a publicação é pulada |
@@ -126,9 +127,13 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
   ao criar métricas novas sobre séries por cota (preço, VP), ajuste também ou deixe claro que não está ajustado.
   A B3 nem sempre lista eventos antigos: o alerta de salto de preço aponta os casos; registre-os em
   `seeds/corporate_actions.csv` só com evidência (preço + cotas na CVM) na nota.
-- **Planilha:** colunas da aba `fiidb` são referenciadas por nome nas fórmulas do autor; só acrescente no fim.
-- **Escopo:** FII (BDI 12, todos) e FI-Infra (BDI 14, só os da watchlist, `fund.type = 'FIINFRA'`); Fiagro
-  depois. O COTAHIST carrega todo o BDI 14 (ETFs, FIPs etc. ficam sem fundo). Sem fontes pagas, sem dados intraday.
+- **Planilha:** colunas da aba `fiidb` são referenciadas por nome nas fórmulas do autor; só acrescente no fim
+  (`sheets.LATE_COLUMNS`, depois de `atualizado_em`).
+- **Escopo:** FII (BDI 12, todos), Fiagro (BDI 14, todos, `fund.type = 'FIAGRO'`) e FI-Infra (BDI 14, só os da
+  watchlist, `fund.type = 'FIINFRA'`). O COTAHIST carrega todo o BDI 14 (ETFs, FIPs etc. ficam sem fundo). Sem
+  fontes pagas, sem dados intraday.
+- **Fiagro:** segue o caminho do FII (informe mensal → `monthly_report`, proventos pelo FundosNET), não o do
+  FI-Infra. O informe Fiagro traz percentuais em % e prevalece sobre o informe FII do mesmo mês.
 - **Idioma:** código, comentários e `comment on` em inglês; documentação (`docs/`, README, este arquivo) em
   português.
 - **Git:** branch `master`, remoto `origin` = github.com/joao-sallaberry/fiidb (**público**). Commits e pushes só
@@ -142,7 +147,7 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
   socket, a sessão foi aberta antes de entrar no grupo: reinicie a sessão.
 - O dbmate roda como root no container, por isso o dump `db/schema.sql` está desligado
   (`DBMATE_NO_DUMP_SCHEMA`).
-- Primeira carga completa: ~1 GB de download (COTAHIST) e alguns minutos. Com o cache, ~1 minuto. Banco ~370 MB.
+- Primeira carga completa: ~1 GB de download (COTAHIST) e alguns minutos. Com o cache, ~1 minuto. Banco ~420 MB.
 - O COTAHIST diário sai por volta das 20h30; antes disso, o 404 do dia é esperado.
 
 ## Plano
@@ -153,10 +158,12 @@ O CLI lê o `.env` da raiz do repositório (ignorado pelo git); variáveis de am
    liquidez média)
 4. ✅ Planilha: o pipeline escreve a aba `fiidb` direto pela Sheets API (decidido no lugar de R2 + Apps Script:
    menos peças e dados privados); desdobramentos da B3 aplicados aos proventos
-5. ✅ FI-Infra (VP diário da CVM, proventos da página da B3, CNPJ informado na watchlist); Fiagro pendente
+5. ✅ FI-Infra (VP diário da CVM, proventos da página da B3, CNPJ informado na watchlist) e Fiagro (informe mensal
+   próprio da CVM, proventos pelo FundosNET)
 6. API Hono/TS com tokens; deploy (Oracle Always Free ou VPS); frontend
 
-Pendências conhecidas: ~37 tickers de FII negociados sem fundo vinculado (usar `watch add --cnpj`, CNPJ confirmado
-pelo ticker no XML de um aviso do FundosNET; ver docs/ingestion.md);
+Pendências conhecidas: ~40 tickers de FII e 5 de Fiagro (RURA11, FZDA11, AAGR11, BRFT11, CTEM11) negociados sem
+fundo vinculado (usar `watch add --cnpj`, CNPJ confirmado pelo ticker no XML de um aviso do FundosNET; ver
+docs/ingestion.md); Fiagro sem subdivisão terras/crédito;
 agendamento dos jobs (`catch-up` no boot/diário, `fnet-latest` frequente) ainda não configurado; segmento vazio para
 ~80 fundos de tijolo negociados que se declaram "Multicategoria" (preencher via `seeds/fund_overrides.csv`).

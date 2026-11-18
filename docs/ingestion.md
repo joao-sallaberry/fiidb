@@ -1,7 +1,7 @@
 # Ingestão de dados
 
 Como os dados chegam ao Postgres: fontes, tabelas, fluxo do `catch-up` e as armadilhas conhecidas de cada fonte.
-O escopo atual é **FII** (todos) e **FI-Infra** (só os da watchlist); Fiagro virá depois (`fund.type`).
+O escopo atual é **FII** e **Fiagro** (todos) e **FI-Infra** (só os da watchlist); `fund.type` diz qual é qual.
 
 ## Visão geral
 
@@ -9,6 +9,7 @@ O escopo atual é **FII** (todos) e **FI-Infra** (só os da watchlist); Fiagro v
 flowchart LR
     subgraph CVM["CVM Dados Abertos"]
         IM["inf_mensal_fii_AAAA.zip<br/>geral · complemento · ativo_passivo"]
+        IA["inf_mensal_fiagro_AAAAMM.zip<br/>informe mensal Fiagro"]
         RG["registro_fundo_classe.zip<br/>cadastro de fundos e classes"]
         ID["inf_diario_fi_AAAAMM.zip<br/>informe diário"]
     end
@@ -22,10 +23,12 @@ flowchart LR
 
     IM --> fund
     IM --> monthly_report
+    IA --> fund
+    IA --> monthly_report
     CH --> quote_daily
     CH --> security
     CLI --> watchlist
-    watchlist -- "CNPJs de FII" --> FN
+    watchlist -- "CNPJs de FII e Fiagro" --> FN
     FN --> fnet_document
     FN --> distribution
     watchlist -- "tickers" --> BF
@@ -55,12 +58,12 @@ flowchart LR
 
 | Tabela | Fonte | Conteúdo | Chave |
 |---|---|---|---|
-| `fund` | CVM, CSV `geral` (FII); cadastro `registro_classe` (FI-Infra da watchlist) | Cadastro: CNPJ, tipo, nome, ISIN informado, segmento declarado, administrador | `cnpj` |
-| `monthly_report` | CVM, CSVs `complemento` + `ativo_passivo` | PL, VP/cota, cotistas, rentabilidade, DY do mês; composição do ativo em `raw` | `(fund_id, ref_month)` |
+| `fund` | CVM, CSV `geral` (FII); informe mensal Fiagro; cadastro `registro_classe` (FI-Infra da watchlist) | Cadastro: CNPJ, tipo, nome, ISIN informado, segmento declarado, administrador | `cnpj` |
+| `monthly_report` | CVM, CSVs `complemento` + `ativo_passivo` (FII); informe mensal Fiagro (`raw.informe = 'fiagro'`) | PL, VP/cota, cotistas, rentabilidade, DY do mês; composição do ativo em `raw` | `(fund_id, ref_month)` |
 | `daily_report` | CVM informe diário, só FI-Infra da watchlist | VP/cota, PL, valor da carteira, cotistas por dia | `(fund_id, ref_date)` |
 | `security` | B3 COTAHIST (BDI 12 e 14) + vínculo calculado | Tickers negociados, ISIN, BDI, período de negociação, `fund_id` | `ticker` |
 | `quote_daily` | B3 COTAHIST | OHLC, volume, nº de negócios por pregão (sem ajuste) | `(ticker, trade_date)` |
-| `distribution` | FII: B3 FundosNET (`source = 'fnet'`); FI-Infra: página do fundo na B3, `cashDividends` (`source = 'b3'`). Só fundos da `watchlist` | Rendimentos e amortizações: data-com, pagamento, valor por cota | `fnet`: `(fnet_document_id, isin, kind)`; `b3`: `(isin, kind, base_date)` |
+| `distribution` | FII e Fiagro: B3 FundosNET (`source = 'fnet'`); FI-Infra: página do fundo na B3, `cashDividends` (`source = 'b3'`). Só fundos da `watchlist` | Rendimentos e amortizações: data-com, pagamento, valor por cota | `fnet`: `(fnet_document_id, isin, kind)`; `b3`: `(isin, kind, base_date)` |
 | `fnet_document` | B3 FundosNET (busca) | Avisos já processados: versão, situação (ativo/cancelado/inativo), erro | `id` |
 | `watchlist` | você, via `fiidb watch` (fora do git) | Fundos cujos proventos são buscados; até quando o histórico está completo | `ticker` |
 | `corporate_action` | B3, página do fundo (`stockDividends`), só watchlist | Desdobramentos, grupamentos e bonificações: data-com, fator | `(isin, last_date_prior, kind)` |
@@ -88,7 +91,7 @@ erDiagram
     fund {
         bigint id PK
         text cnpj UK
-        text type "FII | FIINFRA"
+        text type "FII | FIAGRO | FIINFRA"
         text name
         text isin "informado à CVM"
         text segment
@@ -118,7 +121,7 @@ erDiagram
         numeric return_nav_ratio
         numeric dividend_yield_ratio
         numeric amortization_ratio
-        jsonb raw "linha original da CVM"
+        jsonb raw "linha original da CVM; informe = fiagro"
     }
     daily_report {
         bigint fund_id PK, FK
@@ -131,7 +134,7 @@ erDiagram
     security {
         text ticker PK
         text isin
-        text bdi_code "12 FII | 14 FI-Infra etc."
+        text bdi_code "12 FII | 14 Fiagro, FI-Infra etc."
         text short_name
         date first_trade_date
         date last_trade_date
@@ -233,7 +236,8 @@ erDiagram
 | CVM informe mensal | `https://dados.cvm.gov.br/dados/FII/DOC/INF_MENSAL/DADOS/inf_mensal_fii_{AAAA}.zip` | Semanal; os últimos ~5 anos são republicados com reenvios |
 | COTAHIST anual | `https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_A{AAAA}.ZIP` (~90 MB) | Diária durante o ano corrente |
 | COTAHIST diário | `https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_D{DDMMAAAA}.ZIP` (~400 KB) | Publicado à noite (~20h30) |
-| FundosNET busca | `https://fnet.bmfbovespa.com.br/fnet/publico/pesquisarGerenciadorDocumentosDados` (`idCategoriaDocumento=14`, `idTipoDocumento=41`, `tipoFundo=1`) | Contínua |
+| CVM informe mensal Fiagro | `https://dados.cvm.gov.br/dados/FIAGRO/DOC/INF_MENSAL/DADOS/inf_mensal_fiagro_{AAAAMM}.zip` (≤ 75 KB) | Semanal; todos os meses são republicados |
+| FundosNET busca | `https://fnet.bmfbovespa.com.br/fnet/publico/pesquisarGerenciadorDocumentosDados` (`idCategoriaDocumento=14`, `idTipoDocumento=41`, sem `tipoFundo`) | Contínua |
 | FundosNET documento | `https://fnet.bmfbovespa.com.br/fnet/publico/downloadDocumento?id={id}` | — |
 | B3 página do fundo | `https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/GetListedSupplementFunds/{base64 de {"cnpj":"0","identifierFund":"HGLG","typeFund":7}}` (serve também para FI-Infra) | Contínua |
 | CVM cadastro de fundos | `https://dados.cvm.gov.br/dados/FI/CAD/DADOS/registro_fundo_classe.zip` (~7 MB) | Diária |
@@ -247,21 +251,23 @@ Os endpoints do FundosNET e da página do fundo na B3 não são APIs oficiais e 
 
 1. **CVM**: para cada ano de `FIIDB_START_YEAR` (padrão 2016) até o atual, baixa o zip (~1 MB) e compara o sha256
    com a última execução bem-sucedida em `ingestion_run`. Se mudou, recarrega o ano inteiro numa transação.
-2. **COTAHIST**:
+2. **CVM Fiagro**: para cada mês de 2025-05 (o primeiro publicado) até o atual, baixa o zip e recarrega o mês
+   se o sha256 mudou. 404 = mês ainda não publicado.
+3. **COTAHIST**:
    - anos fechados: arquivo anual, uma única vez (cacheado em `FIIDB_CACHE_DIR`, padrão `~/.cache/fiidb`);
    - ano corrente: arquivo anual na primeira vez, depois um arquivo diário por dia útil desde a última cotação.
      404 = feriado ou ainda não publicado (é tentado de novo na próxima execução).
    - Se o banco ainda não tem nenhum ticker BDI 14 (carregado antes do FI-Infra), recarrega todos os anos uma vez.
-3. **FI-Infra** (só se houver algum na watchlist): cadastro da CVM e informe diário do mês corrente e do anterior,
+4. **FI-Infra** (só se houver algum na watchlist): cadastro da CVM e informe diário do mês corrente e do anterior,
    cada arquivo só quando o sha256 mudou.
-4. **FundosNET**: o mesmo que `fiidb fnet-latest` (abaixo), incluindo os proventos de FI-Infra pela página da B3.
-5. **Vínculo ticker → fundo** (`fiidb/linking.py`), detalhado abaixo.
-6. **Seeds**: substitui `fund_override` e os eventos manuais de `corporate_action` pelo conteúdo dos CSVs.
+5. **FundosNET**: o mesmo que `fiidb fnet-latest` (abaixo), incluindo os proventos de FI-Infra pela página da B3.
+6. **Vínculo ticker → fundo** (`fiidb/linking.py`), detalhado abaixo.
+7. **Seeds**: substitui `fund_override` e os eventos manuais de `corporate_action` pelo conteúdo dos CSVs.
 
 Cada arquivo é uma transação própria (conexão em autocommit + `conn.transaction()`). Falhas são registradas em
 `ingestion_run` com `status = 'error'`, os demais arquivos seguem, e o comando sai com código 1.
 
-Primeira carga: ~1 GB de download e alguns minutos. Execuções seguintes: segundos. Banco completo: ~370 MB.
+Primeira carga: ~1 GB de download e alguns minutos. Execuções seguintes: segundos. Banco completo: ~420 MB.
 
 ## Proventos (FundosNET)
 
@@ -285,7 +291,51 @@ Regras:
 - `distribution.fund_cnpj` é o CNPJ usado na busca (o da CVM), não o escrito no XML.
 - `watchlist.history_since` marca desde quando o histórico está completo (`1900-01-01` = tudo). Só é
   atualizado quando todas as páginas e documentos foram processados sem erro.
+- A busca **não** filtra por `tipoFundo`: os avisos de um Fiagro estão em `tipoFundo=1` (FII) até ~set/2025 e em
+  `tipoFundo=11` depois (ver [Fiagro](#fiagro)). CNPJ + categoria + tipo de documento já bastam.
 - FI-Infra não passa pelo FundosNET (ver abaixo).
+
+## Fiagro
+
+Para o pipeline, um Fiagro é um FII com outro informe mensal: mesmas tabelas, mesmos proventos pelo FundosNET
+(XML idêntico), mesmos desdobramentos pela página da B3. Todos os Fiagros da CVM são carregados (310 em set/2026,
+de todos os tipos: imobiliário, direitos creditórios, participações); a maioria é de balcão, sem ticker.
+
+| Dado | Fonte | Observação |
+|---|---|---|
+| Preço | COTAHIST, BDI 14 | 36 tickers `FIAGRO …` negociados em nov/2026. BTAL11 e BTRA11 continuam no BDI 12 |
+| Cadastro, VP/cota, PL, cotistas | CVM `inf_mensal_fiagro_AAAAMM.zip` | Um zip por mês desde 2025-05. Só o CSV principal é lido (uma linha por classe, 133 colunas); o de subclasses é ignorado |
+| Proventos | FundosNET | Como FII; só fundos da watchlist |
+
+**Transição**: até ~ago/2025 os Fiagro-Imobiliário entregavam o informe mensal de FII, então a maioria já existia
+em `fund` como `FII`, com histórico em `monthly_report`. Com o Anexo VI da RCVM 175 passaram ao informe próprio
+(3 fundos em 2025-05, 125 em 2025-09, 310 em 2026-09). O CNPJ é o mesmo: ao aparecer no informe Fiagro com mês
+igual ou posterior ao último informe FII, o fundo vira `type = 'FIAGRO'` e os informes continuam na mesma série.
+`cvm_fii` não escreve `type`, então recarregar um ano antigo não desfaz a troca. Segmento e demais campos que só
+existem no informe FII ficam como estavam.
+
+**Meses nos dois informes**: 14 pares (fundo, mês) foram entregues nos dois. Vale sempre o do Fiagro, marcado com
+`raw.informe = 'fiagro'`: ele sobrescreve a linha do FII seja qual for a versão, e o `cvm_fii` não mexe em linha
+marcada. Um fundo cujo informe FII ainda é o mais recente guarda o informe Fiagro mas continua `FII`.
+
+**Diferenças do arquivo**:
+
+- Percentuais vêm em % (`Dividend_Yield_Mes = 1.09`), não em fração como no informe FII. São divididos por 100
+  antes de gravar; em `raw` ficam como vieram.
+- `Valor_Patrimonial_Cotas` tem só 2 casas (9.98). Quando `Patrimonio_Liquido / Cotas_Emitidas` arredonda para o
+  valor informado, grava-se o quociente (9,98037235); senão, o informado. Fundos de balcão com "1 cota" (o VP é o
+  PL inteiro) e VP ≤ 0 ficam com VP NULL (60 de 310 em set/2026), original em `raw`.
+- ISIN em branco em ~40% das linhas; um ISIN em branco não apaga o que o fundo já tinha.
+
+**Vínculo**: pelo ISIN, como FII, mas no BDI 14 só para fundos `FIAGRO` (o BDI 14 tem ETFs, FIPs e FIDCs). Dos 36
+tickers negociados, 27 ligam por `isin` e 4 por `isin_issuer` (KNCA11 negocia como `BRKNCACTF006` e informa
+`BRKNCACTF014`; RZEO11 informa o ISIN de um recibo). Ficam sem fundo os de ISIN ambíguo ou ausente: RURA11
+(`BRRURAR01M16` em dois fundos), FZDA11 (`BRFZDACTF008` em dois), AAGR11, BRFT11, CTEM11. Para esses, use
+`fiidb watch add TICKER --cnpj <cnpj>` **depois** de um `catch-up`: com o CNPJ já em `fund` como Fiagro, o comando
+segue o fluxo do FundosNET; um CNPJ desconhecido num ticker BDI 14 é tratado como FI-Infra.
+
+**Classificação**: categoria `Fiagro`, sem segmento (a composição do ativo fica em `raw`: `Imoveis_Rurais`, `CRA`,
+`CPR`, `FIDC`…, para uma subdivisão futura em terras/crédito).
 
 ## FI-Infra
 
@@ -295,7 +345,7 @@ traz nada). As fontes são outras:
 
 | Dado | Fonte | Observação |
 |---|---|---|
-| Preço | COTAHIST, BDI 14 | Junto com ETFs, FIPs, FIDCs e Fiagro (~300 tickers). Todos são carregados em `security`/`quote_daily`; só os vinculados a um fundo aparecem com dados |
+| Preço | COTAHIST, BDI 14 | Junto com ETFs, FIPs, FIDCs e Fiagro (~310 tickers). Todos são carregados em `security`/`quote_daily`; só os vinculados a um fundo aparecem com dados |
 | Cadastro | CVM `registro_fundo_classe.zip` | `registro_classe.csv` (o CNPJ negociado é o da classe), `registro_fundo.csv` (administrador, pelo `ID_Registro_Fundo`). Um CNPJ pode ter registros cancelados: vale o ativo. **Sem ISIN** |
 | VP/cota, PL, cotistas | CVM `inf_diario_fi_AAAAMM.zip` | Diário. Linhas de subclasse são ignoradas (classes listadas não têm). Só os CNPJs de FI-Infra do banco são guardados |
 | Proventos | Página do fundo na B3, `cashDividends` | Janela móvel de ~12 meses (em out/2026, a partir de out/2025, em todos os fundos consultados). Rótulos `RENDIMENTO` e `AMORTIZACAO RF`; recibos de subscrição vêm com o próprio ISIN |
@@ -304,7 +354,8 @@ traz nada). As fontes são outras:
 (CPTI11 é "FIC IE CAP"). O CNPJ vem de `fiidb watch add KDIF11 --cnpj 26.324.298/0001-89` (o CNPJ aparece na
 página do fundo no site da B3 e no regulamento) e é **conferido**: `quantity` da página da B3 × VP/cota do último
 informe diário tem que dar o PL (tolerância de 2%; KDIF11: 23.484.769 × 117,998 = 100,00% do PL). Se não bater, o
-comando avisa. Um `--cnpj` é tratado como FI-Infra quando o ticker é BDI 14 e o CNPJ não é de um FII conhecido.
+comando avisa. Um `--cnpj` é tratado como FI-Infra quando o ticker é BDI 14 e o CNPJ não é de um FII ou Fiagro
+conhecido.
 
 Ao adicionar: cria o `fund` (`type = 'FIINFRA'`) a partir do cadastro, carrega o informe diário do mês corrente e
 do anterior, vincula o ticker (`link_method = 'watchlist'`) e busca proventos e desdobramentos na B3.
@@ -351,7 +402,7 @@ View com uma linha por ticker, para a planilha e a futura API.
 | Coluna | Definição |
 |---|---|
 | `price`, `price_date` | Último fechamento (sem ajuste) |
-| `nav_per_share`, `net_assets`, `shareholders`, `report_month` | Último informe da CVM com VP/cota: mensal para FII (`report_month` = 1º dia do mês), diário para FI-Infra (`report_month` = o dia) |
+| `nav_per_share`, `net_assets`, `shareholders`, `report_month` | Último informe da CVM com VP/cota: mensal para FII e Fiagro (`report_month` = 1º dia do mês), diário para FI-Infra (`report_month` = o dia) |
 | `price_to_nav` | P/VP = `price / nav_per_share` |
 | `last_income*` | Último rendimento (valor, data-com, pagamento), por cota de hoje. Amortizações não entram |
 | `income_12m`, `dividend_yield_12m` | Soma dos rendimentos com data-com nos últimos 12 meses (ajustados por desdobramentos), e essa soma / `price`. **Só preenchido** para fundos da watchlist com `history_since` ≥ 12 meses atrás; senão NULL (não zero) |
@@ -370,7 +421,9 @@ fora da sua aba.
 
 - Colunas (`sheets.COLUMNS`): `ticker, nome, categoria, segmento, vp_cota, mes_ref_vp, ultimo_rendimento,
   data_com, data_pagamento, rendimentos_12m, liquidez_media_21d, cotistas, preco_fechamento, data_fechamento,
-  atualizado_em`. As fórmulas do usuário dependem dos nomes: **só acrescente colunas no fim, nunca renomeie**.
+  atualizado_em, patrimonio_liquido`. As fórmulas do usuário dependem dos nomes: **só acrescente colunas no fim,
+  nunca renomeie**. Colunas novas vão em `sheets.LATE_COLUMNS`, depois de `atualizado_em`, para nenhuma mudar de
+  posição. `patrimonio_liquido` é o PL em R$ do mesmo informe do `vp_cota` (`mes_ref_vp`).
 - O pipeline manda os "ingredientes" (VP/cota, soma de 12 meses); P/VP e DY são calculados na planilha com o
   preço ao vivo do `GOOGLEFINANCE`.
 - Escrita: `PUT` a partir de A1 com `USER_ENTERED` (datas ISO viram datas), depois limpa as linhas abaixo; a aba
@@ -397,8 +450,8 @@ vazio, com erro de digitação ou de recibo de subscrição (`...R01M...`). Os m
 |---|---|
 | `fnet` | ISIN de um provento do FundosNET, buscado pelo CNPJ do fundo (só fundos da watchlist) |
 | `watchlist` | CNPJ informado em `fiidb watch add --cnpj` (FI-Infra: conferido com cotas × VP) |
-| `isin` | ISIN do COTAHIST = ISIN informado à CVM, se só um fundo o informa (só BDI 12) |
-| `isin_issuer` | Mesmo código de emissor (caracteres 3–6 do ISIN, ex. `BR`**`HGLG`**`CTF004`) e só um FII com ele (só BDI 12) |
+| `isin` | ISIN do COTAHIST = ISIN informado à CVM, se só um fundo o informa (BDI 12; no BDI 14, só se o fundo é Fiagro) |
+| `isin_issuer` | Mesmo código de emissor (caracteres 3–6 do ISIN, ex. `BR`**`HGLG`**`CTF004`) e só um FII com ele (BDI 12), ou só um Fiagro com ele (BDI 14) |
 
 Fundos *feeder* costumam informar o ISIN do fundo principal (o `BRSPTWCTF002` aparece em 7 fundos). Um ISIN
 ambíguo não vincula nada, e vínculos `isin` que ficaram ambíguos são desfeitos (`isin_stale`). Desempatar pelo
@@ -410,7 +463,7 @@ Para descobrir o CNPJ de um ticker sem vínculo: os avisos recentes do FundosNET
 ticker no XML antes de usar o CNPJ. Ao carregar o histórico, o pipeline avisa se os avisos de um CNPJ citam outros
 tickers e não o da watchlist (sinal de CNPJ errado).
 
-Hoje ~37 tickers de FII negociados nos últimos 30 dias ficam sem fundo. Para um deles entrar na watchlist, use
+Hoje ~40 tickers de FII e 5 de Fiagro negociados nos últimos 30 dias ficam sem fundo. Para um deles entrar na watchlist, use
 `fiidb watch add TICKER --cnpj <cnpj>`; o vínculo `fnet` passa a valer depois da primeira carga.
 
 ## Classificação (`fund_profile`)
@@ -427,7 +480,8 @@ liquidez):
 | nenhuma das anteriores | Híbrido |
 
 O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é específico (não "Multicategoria",
-"Outros" ou "Títulos e Val. Mob."). Fundos com `type = 'FIINFRA'` têm categoria `FI-Infra`, sem segmento.
+"Outros" ou "Títulos e Val. Mob."). Fundos com `type = 'FIINFRA'` têm categoria `FI-Infra` e os com
+`type = 'FIAGRO'`, `Fiagro`, ambos sem segmento (a composição de um Fiagro vinda dos antigos informes FII é ignorada).
 `seeds/fund_overrides.csv` prevalece sobre tudo.
 
 ## Armadilhas conhecidas das fontes
@@ -439,7 +493,10 @@ O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é
 | CVM | ~1% dos informes com proporções absurdas (rentabilidade de 10 bilhões no mês) | `\|ratio\| > 1` vira NULL; original fica em `raw`; colunas `numeric` sem limite |
 | CVM | Segmento declarado grosseiro (maioria "Multicategoria") | Classificação própria + overrides |
 | CVM | ISIN vazio ou errado | Vínculo em camadas |
-| B3 | FIIs no BDI 12, mas Fiagro/FI-Infra no BDI 14 junto com ETFs, FIPs e FIDCs | Os dois são carregados; o tipo vem da watchlist/CVM, não da B3. Vínculo por ISIN só no BDI 12 |
+| B3 | FIIs no BDI 12, mas Fiagro/FI-Infra no BDI 14 junto com ETFs, FIPs e FIDCs | Os dois são carregados; o tipo vem da watchlist/CVM, não da B3. Vínculo por ISIN no BDI 12 e, no BDI 14, só com fundos Fiagro |
+| CVM | Fiagros saíram do informe FII para um informe próprio em 2025; alguns meses estão nos dois | Mesmo CNPJ, mesma série em `monthly_report`; o informe Fiagro prevalece (`raw.informe`) |
+| CVM | Informe Fiagro: percentuais em % e VP/cota com 2 casas; fundos de balcão com "1 cota" | ÷ 100; VP = PL ÷ cotas quando confere; VP NULL para cota única |
+| FundosNET | Avisos de um Fiagro divididos entre `tipoFundo` 1 (até ~set/2025) e 11 | Busca sem `tipoFundo` |
 | CVM/B3 | FI-Infra sem ISIN na CVM e sem CNPJ na B3 | CNPJ informado na watchlist e conferido com cotas × VP |
 | FundosNET | Sem avisos de FI-Infra | Proventos de FI-Infra pela página do fundo na B3 |
 | B3 | `cashDividends` só traz ~12 meses | Linhas acumulam no banco; `history_since` = hoje − 12 meses |
@@ -457,6 +514,6 @@ O segmento declarado à CVM só é usado para Tijolo/Desenvolvimento e quando é
 - `uv run pytest`: parsers, com fixtures reais em `pipeline/tests/fixtures/`.
 - Com `FIIDB_TEST_DATABASE_URL` apontando para um banco descartável, também os testes de carga
   (`tests/test_load.py`, `tests/test_fnet_load.py`, `tests/test_corporate_actions.py`, `tests/test_sheets.py`,
-  `tests/test_fiinfra.py`;
+  `tests/test_fiinfra.py`, `tests/test_fiagro.py`;
   fixtures em `tests/conftest.py`). Eles **apagam o schema
   `public`** desse banco e aplicam `db/migrations`. FundosNET, CVM e B3 são simulados com `httpx.MockTransport`.

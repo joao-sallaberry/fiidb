@@ -2,7 +2,8 @@
 
 The ISIN a fund reports to CVM is frequently missing, mistyped or points to a subscription
 receipt, so matching falls back from the strongest evidence to the weakest. Earlier,
-stronger links are never overwritten by weaker ones. ISIN matching only applies to FIIs (BDI 12):
+stronger links are never overwritten by weaker ones. ISIN matching applies to FIIs (BDI 12) and
+to Fiagro funds (BDI 14, shared with ETFs, FIPs and FIDCs, so the fund type is checked):
 FI-Infra funds have no ISIN at CVM and are linked by the CNPJ given in the watchlist.
 """
 
@@ -12,7 +13,7 @@ import psycopg
 # It only identifies a fund when a single fund reports it. (Preferring the one that says it is
 # exchange-listed was tried and linked KISU11 and HUSC11 to the wrong funds: CVM's flag is unreliable.)
 UNAMBIGUOUS_ISIN = """
-    select isin, min(id) as fund_id
+    select isin, min(id) as fund_id, min(type) as fund_type
     from fund
     where isin is not null
     group by isin
@@ -47,7 +48,8 @@ STEPS = {
     "isin": f"""
         update security s set fund_id = u.fund_id, link_method = 'isin'
         from ({UNAMBIGUOUS_ISIN}) u
-        where u.isin = s.isin and s.bdi_code = '12' and coalesce(s.link_method, '') not in ('fnet', 'watchlist')
+        where u.isin = s.isin and (s.bdi_code = '12' or (s.bdi_code = '14' and u.fund_type = 'FIAGRO'))
+            and coalesce(s.link_method, '') not in ('fnet', 'watchlist')
             and (s.fund_id is distinct from u.fund_id or s.link_method is distinct from 'isin')
     """,
     # Same issuer code (ISIN chars 3-6, e.g. BR[HGLG]CTF004), when exactly one fund has it.
@@ -59,6 +61,16 @@ STEPS = {
             group by 1 having count(*) = 1
         ) m
         where s.fund_id is null and s.bdi_code = '12' and substr(s.isin, 3, 4) = m.issuer
+    """,
+    # The same for Fiagro (BDI 14): KNCA11 trades as BRKNCACTF006 and reports BRKNCACTF014 to CVM.
+    "isin_issuer_fiagro": """
+        update security s set fund_id = m.fund_id, link_method = 'isin_issuer'
+        from (
+            select substr(isin, 3, 4) issuer, min(id) fund_id
+            from fund where length(isin) = 12 and type = 'FIAGRO'
+            group by 1 having count(*) = 1
+        ) m
+        where s.fund_id is null and s.bdi_code = '14' and substr(s.isin, 3, 4) = m.issuer
     """,
 }
 

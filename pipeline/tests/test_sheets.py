@@ -43,7 +43,10 @@ def test_write_reuses_existing_tab():
 def test_build_rows_only_watchlist(conn, load_fixtures):
     load_fixtures(conn)
     linking.link_securities(conn)
-    assert sheets.build_rows(conn) == [[h for h, _ in sheets.COLUMNS] + ["atualizado_em"]]  # empty watchlist
+    (header,) = sheets.build_rows(conn)  # empty watchlist
+    # Columns added later come after `atualizado_em`, so no existing column changes position.
+    assert header[:15] == [h for h, _ in sheets.COLUMNS] + ["atualizado_em"]
+    assert header[15:] == ["patrimonio_liquido"]
 
     watchlist.add(conn, "HGLG11")
     watchlist.mark_history(conn, "HGLG11", dates.today() - timedelta(days=400))
@@ -54,6 +57,7 @@ def test_build_rows_only_watchlist(conn, load_fixtures):
     assert record["mes_ref_vp"] == "2026-08-01"
     assert record["rendimentos_12m"] == 0.0  # complete history, no distributions in the fixture
     assert record["ultimo_rendimento"] == ""
+    assert record["patrimonio_liquido"] > 1e9  # net assets (BRL) from the same report as vp_cota
 
 
 def test_dotenv(tmp_path):

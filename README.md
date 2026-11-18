@@ -1,14 +1,16 @@
 # fiidb
 
-Armazena e serve dados de fundos imobiliários (FII) e de fundos de infraestrutura (FI-Infra) listados na B3, usando
+Armazena e serve dados de fundos imobiliários (FII), do agronegócio (Fiagro) e de infraestrutura (FI-Infra) listados
+na B3, usando
 apenas fontes públicas gratuitas:
 
 | Dado | Fonte |
 |---|---|
 | FII: cadastro e informe mensal (PL, VP/cota, cotistas, DY) | [CVM Dados Abertos](https://dados.cvm.gov.br/dataset/fii-doc-inf_mensal) |
+| Fiagro: cadastro e informe mensal (PL, VP/cota, cotistas, DY) | [CVM Dados Abertos](https://dados.cvm.gov.br/dados/FIAGRO/DOC/INF_MENSAL/) |
 | FI-Infra: cadastro e informe diário (PL, VP/cota, cotistas) | [CVM Dados Abertos](https://dados.cvm.gov.br/dataset/fi-doc-inf_diario) |
 | Cotações diárias | B3 COTAHIST |
-| Proventos de FII (fundos da watchlist) | B3 FundosNET — "Aviso aos Cotistas – Estruturado" |
+| Proventos de FII e Fiagro (fundos da watchlist) | B3 FundosNET — "Aviso aos Cotistas – Estruturado" |
 | Proventos de FI-Infra (fundos da watchlist) | B3, página do fundo (últimos ~12 meses) |
 
 ## Rodando localmente
@@ -25,13 +27,13 @@ uv run fiidb catch-up                    # baixa tudo que falta (1ª vez: ~1 GB 
 uv run fiidb status
 ```
 
-`catch-up` é idempotente: pode rodar no boot e diariamente. Outros comandos: `fiidb cvm-fii <ano>`,
+`catch-up` é idempotente: pode rodar no boot e diariamente. Outros comandos: `fiidb cvm-fii <ano>`, `fiidb cvm-fiagro <AAAA-MM>`,
 `fiidb cotahist --year <ano> | --day <AAAA-MM-DD>`.
 
 Proventos são buscados só para os fundos que você acompanha (o FundosNET é lento demais para todos):
 
 ```sh
-uv run fiidb watch add HGLG11 KNRI11     # inclui e carrega ~13 meses de proventos
+uv run fiidb watch add HGLG11 SNAG11     # FII ou Fiagro: inclui e carrega ~13 meses de proventos
 uv run fiidb fnet-latest                 # avisos novos (rodar com frequência; também roda no catch-up)
 uv run fiidb fnet-history HGLG11         # histórico completo, quando quiser
 ```
@@ -67,6 +69,7 @@ Fórmulas (planilha em português; buscar a coluna pelo nome do cabeçalho mant�
 Preço:      =GOOGLEFINANCE("BVMF:"&A2)
 VP/cota:    =PROCX($A2; fiidb!$A:$A; PROCX("vp_cota"; fiidb!$1:$1; fiidb!$A:$Z); "")
 Rend. 12m:  =PROCX($A2; fiidb!$A:$A; PROCX("rendimentos_12m"; fiidb!$1:$1; fiidb!$A:$Z); "")
+PL (R$):    =PROCX($A2; fiidb!$A:$A; PROCX("patrimonio_liquido"; fiidb!$1:$1; fiidb!$A:$Z); "")
 P/VP:       =B2/C2
 DY 12m:     =D2/B2
 ```
@@ -89,7 +92,7 @@ Arquitetura da ingestão (fontes, tabelas, armadilhas dos dados): [docs/ingestio
 A view `fund_profile` deriva a categoria da composição do ativo no informe mensal mais recente
 (≥ 60% em imóveis → Tijolo, ou Desenvolvimento se a maior parte for para venda; ≥ 60% em CRI/LCI/etc. → Papel;
 ≥ 60% em cotas de FII → FoF; senão Híbrido). O segmento declarado à CVM só é usado para fundos de tijolo e quando é
-específico (não "Multicategoria"/"Outros"). O que estiver em `seeds/fund_overrides.csv` prevalece.
+específico (não "Multicategoria"/"Outros"). Fiagro e FI-Infra têm categoria própria, pelo tipo do fundo. O que estiver em `seeds/fund_overrides.csv` prevalece.
 
 ## Licença
 

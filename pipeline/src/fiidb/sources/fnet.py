@@ -139,6 +139,7 @@ def parse_search(data: bytes) -> tuple[int, list[Document]]:
 
 
 def search(http: httpx.Client, cnpj: str, *, start: int = 0, limit: int = PAGE_SIZE) -> tuple[int, list[Document]]:
+    # No `tipoFundo` filter: a Fiagro's notices are under 1 (FII) until ~2025-09 and 11 (Fiagro) after.
     params = {
         "d": 1,
         "s": start,
@@ -147,7 +148,6 @@ def search(http: httpx.Client, cnpj: str, *, start: int = 0, limit: int = PAGE_S
         "idCategoriaDocumento": 14,  # Aviso aos Cotistas - Estruturado
         "idTipoDocumento": 41,  # Rendimentos e Amortizações
         "idEspecieDocumento": 0,
-        "tipoFundo": 1,  # FII
         "cnpjFundo": format_cnpj(cnpj),
     }
     return parse_search(fhttp.fetch(http, SEARCH_URL, params=params, retries=RETRIES) or b"{}")

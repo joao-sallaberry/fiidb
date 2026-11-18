@@ -3,6 +3,10 @@
 One zip per year with three CSVs (latin-1, ';'): geral (registry), complemento (NAV,
 shareholders, ratios) and ativo_passivo (balance sheet). Since 2023 the key columns were
 renamed from *_Fundo to *_Fundo_Classe (CVM Resolution 175).
+
+Fiagro-Imobiliario funds filed this report until ~2025-08 and then moved to their own (cvm_fiagro),
+which turns them into `type = 'FIAGRO'`. `type` is not written here, so reloading an old year never
+turns them back.
 """
 
 import csv
@@ -204,7 +208,8 @@ def load(conn: psycopg.Connection, funds: list[Fund], reports: list[Report]) -> 
             for r in reports
         ),
         key=["fund_id", "ref_month"],
-        where="excluded.version >= monthly_report.version",
+        # A month also filed in the Fiagro report (cvm_fiagro, marked in raw) keeps that one.
+        where="excluded.version >= monthly_report.version and monthly_report.raw ->> 'informe' is distinct from 'fiagro'",
     )
 
 

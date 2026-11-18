@@ -7,12 +7,12 @@ import typer
 
 from fiidb import config, dates, db, linking, seeds, sheets, watchlist
 from fiidb import http as fhttp
-from fiidb.sources import b3_cotahist, b3_funds, cvm_fi, cvm_fii, fnet
+from fiidb.sources import b3_cotahist, b3_funds, cvm_fi, cvm_fiagro, cvm_fii, fnet
 
 log = logging.getLogger("fiidb")
 
 app = typer.Typer(no_args_is_help=True, help="fiidb ingestion pipeline")
-watch_app = typer.Typer(no_args_is_help=True, help="Funds whose distributions are ingested (FII and FI-Infra)")
+watch_app = typer.Typer(no_args_is_help=True, help="Funds whose distributions are ingested (FII, Fiagro, FI-Infra)")
 app.add_typer(watch_app, name="watch")
 
 # Enough FundosNET history for DY 12m, with margin for notices delivered before the data-com.
@@ -44,6 +44,20 @@ def catch_up() -> None:
                     conn,
                     source=cvm_fii.SOURCE,
                     period=str(year),
+                    status="error",
+                    started_at=dates.now(),
+                    error=str(exc),
+                )
+        for month in cvm_fiagro.months():
+            try:
+                cvm_fiagro.ingest_month(conn, http, month)
+            except Exception as exc:
+                log.exception("cvm_fiagro %s failed", f"{month:%Y-%m}")
+                failed.append(f"cvm_fiagro {month:%Y-%m}")
+                db.record_run(
+                    conn,
+                    source=cvm_fiagro.SOURCE,
+                    period=f"{month:%Y-%m}",
                     status="error",
                     started_at=dates.now(),
                     error=str(exc),
@@ -174,7 +188,7 @@ def _fnet_history(conn, entries: list[watchlist.Entry], since: date | None, *, f
 
 @app.command("fnet-latest")
 def fnet_latest_cmd() -> None:
-    """Fetch the latest FundosNET notices (FII), B3 distributions (FI-Infra) and B3 corporate actions
+    """Fetch the latest FundosNET notices (FII, Fiagro), B3 distributions (FI-Infra) and B3 corporate actions
     for every watchlist fund (run often)."""
     settings = config.load()
     with db.connect(settings.database_url) as conn:
@@ -249,10 +263,10 @@ def watch_add(
 
 
 def _is_infra_candidate(conn, ticker: str, cnpj: str) -> bool:
-    """A BDI 14 ticker whose CNPJ is not a FII known from the CVM monthly report."""
+    """A BDI 14 ticker whose CNPJ is not a FII or Fiagro known from the CVM monthly reports."""
     security = conn.execute("select bdi_code from security where ticker = %s", (ticker,)).fetchone()
     fund = conn.execute("select type from fund where cnpj = %s", (cnpj,)).fetchone()
-    if fund is not None and fund[0] == "FII":
+    if fund is not None and fund[0] in ("FII", "FIAGRO"):
         return False
     if security is None:
         raise ValueError(f"{ticker}: not in COTAHIST; run `fiidb catch-up` first")
@@ -338,6 +352,17 @@ def cvm_fii_cmd(year: int, force: bool = typer.Option(False, help="Reload even i
     settings = config.load()
     with db.connect(settings.database_url) as conn, fhttp.client() as http:
         typer.echo(cvm_fii.ingest_year(conn, http, year, force=force))
+
+
+@app.command("cvm-fiagro")
+def cvm_fiagro_cmd(
+    month: Annotated[str, typer.Argument(help="Reference month, YYYY-MM")],
+    force: bool = typer.Option(False, help="Reload even if unchanged"),
+) -> None:
+    """Load one month of CVM Fiagro monthly reports."""
+    settings = config.load()
+    with db.connect(settings.database_url) as conn, fhttp.client() as http:
+        typer.echo(cvm_fiagro.ingest_month(conn, http, date.fromisoformat(f"{month}-01"), force=force))
 
 
 @app.command("cotahist")
